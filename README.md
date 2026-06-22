@@ -64,10 +64,13 @@ backend/
 cd backend
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-cp .env.example .env        # then edit
+cp .env.example .env        # then paste your API key into .env
 ```
 
-Configure the provider in `.env`:
+**API keys live in one file: `backend/.env`** (copied from `.env.example`). It is
+git-ignored and loaded automatically on startup into the environment, so every provider
+SDK picks up the keys. You can instead name it `secrets.env`, or point `ASM_ENV_FILE` at
+any path. Configure the provider in that file:
 
 | `LLM_PROVIDER` | Needs | Notes |
 |---|---|---|

@@ -29,7 +29,14 @@ def get_client_and_caps(settings: Settings):
     if provider == "anthropic":
         from anthropic import Anthropic
 
-        return Anthropic(), Capabilities(
+        # Pass the key/endpoint explicitly when present; otherwise the SDK falls
+        # back to the environment (which config.py has already populated).
+        kwargs: dict = {}
+        if settings.anthropic_api_key:
+            kwargs["api_key"] = settings.anthropic_api_key
+        if settings.anthropic_base_url:
+            kwargs["base_url"] = settings.anthropic_base_url
+        return Anthropic(**kwargs), Capabilities(
             files_api=True, auto_prompt_caching=True, explicit_cache_control=True
         )
 
