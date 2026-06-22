@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ASM Review Note Generator</title>
+  <style>
+    :root { --fg:#1f2933; --muted:#6b7280; --accent:#1d4ed8; --line:#e5e7eb; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           color: var(--fg); max-width: 760px; margin: 2.5rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; margin-bottom: .25rem; }
+    p.sub { color: var(--muted); margin-top: 0; }
+    .card { border: 1px solid var(--line); border-radius: 10px; padding: 1.25rem; margin-top: 1.25rem; }
+    input[type=file] { width: 100%; padding: .6rem; border: 1px dashed var(--line); border-radius: 8px; }
+    button { background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+             padding: .6rem 1.1rem; font-size: .95rem; cursor: pointer; margin-top: .9rem; }
+    button[disabled] { opacity: .5; cursor: not-allowed; }
+    .bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 1rem; }
+    .bar > span { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+    .muted { color: var(--muted); font-size: .9rem; }
+    .qc { display: flex; gap: 1.5rem; margin-top: .75rem; flex-wrap: wrap; }
+    .qc div b { font-size: 1.3rem; display: block; }
+    a.download { display: inline-block; margin-top: 1rem; }
+    .hide { display: none; }
+    .err { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>ASM Review Note Generator</h1>
+  <p class="sub">Upload the ASM / stock-audit report (PDF) and any tracker / base-data,
+     sanction, insurance, or previous-quarter files. The note is generated directly;
+     fields not found in the documents appear as <code>[To be entered by L1]</code>.</p>
+
+  <div class="card">
+    <input id="files" type="file" multiple
+           accept=".pdf,.xlsx,.xls,.csv,.txt,.md" />
+    <button id="go">Generate review note</button>
+    <p class="muted">Extraction runs section by section and can take a few minutes.</p>
+  </div>
+
+  <div id="status" class="card hide">
+    <div id="stage" class="muted">Starting…</div>
+    <div class="bar"><span id="fill"></span></div>
+    <div id="qc" class="qc hide"></div>
+    <div id="result"></div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let timer = null;
+
+    $("go").addEventListener("click", async () => {
+      const files = $("files").files;
+      if (!files.length) { alert("Choose at least one file."); return; }
+      const fd = new FormData();
+      for (const f of files) fd.append("files", f);
+
+      $("go").disabled = true;
+      $("status").classList.remove("hide");
+      $("result").innerHTML = "";
+      $("qc").classList.add("hide");
+      setStage("Uploading…", 2);
+
+      try {
+        const res = await fetch("/jobs", { method: "POST", body: fd });
+        if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+        const { job_id } = await res.json();
+        poll(job_id);
+      } catch (e) {
+        fail(e.message);
+      }
+    });
+
+    function setStage(text, pct) {
+      $("stage").textContent = text;
+      if (pct != null) $("fill").style.width = pct + "%";
+    }
+
+    function poll(jobId) {
+      clearInterval(timer);
+      timer = setInterval(async () => {
+        const res = await fetch(`/jobs/${jobId}`);
+        if (!res.ok) return;
+        const job = await res.json();
+        setStage(job.stage || job.status, job.progress);
+        if (job.status === "done") {
+          clearInterval(timer);
+          showDone(jobId, job);
+        } else if (job.status === "error") {
+          clearInterval(timer);
+          fail(job.error || "Generation failed.");
+        }
+      }, 1500);
+    }
+
+    function showDone(jobId, job) {
+      setStage("Done", 100);
+      $("go").disabled = false;
+      const qc = job.qc || {};
+      $("qc").classList.remove("hide");
+      $("qc").innerHTML = `
+        <div><b>${qc.present_fields ?? "-"}/${qc.total_fields ?? "-"}</b><span class="muted">fields populated</span></div>
+        <div><b>${qc.verified_fields ?? "-"}</b><span class="muted">source-verified</span></div>
+        <div><b>${qc.missing_count ?? "-"}</b><span class="muted">left as placeholders</span></div>
+        <div><b>${qc.unverified_count ?? "-"}</b><span class="muted">unverified (check)</span></div>`;
+      let note = "";
+      if (job.skipped && job.skipped.length)
+        note = `<p class="muted">Skipped: ${job.skipped.join(", ")}</p>`;
+      if (qc.verification_performed === false)
+        note += `<p class="muted">Source text was not extractable (e.g. scanned PDF), so values were not auto-verified.</p>`;
+      $("result").innerHTML =
+        `<a class="download" href="/jobs/${jobId}/document">⬇ Download Word document</a>${note}`;
+    }
+
+    function fail(msg) {
+      $("go").disabled = false;
+      setStage("Failed", 0);
+      $("result").innerHTML = `<p class="err">${msg}</p>`;
+    }
+  </script>
+</body>
+</html>
