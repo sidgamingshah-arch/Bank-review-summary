@@ -92,7 +92,8 @@ Version lifecycle: `draft → in_review → published | rejected`; publishing re
 previously published version (`retired`). Only `published` versions resolve at runtime.
 Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
 
-- `GET /api/masters/{mtype}` → `[ItemSummary]` `{key, item_id, latest_version, published_version, updated_at}`
+- `GET /api/masters/{mtype}` → `[ItemSummary]` `{key, item_id, latest_version: int|null,
+  latest_status: str|null, published_version: int|null, updated_at}`
 - `POST /api/masters/{mtype}` `{key, payload, change_note}` → `Item` (creates item + draft v1)
 - `GET /api/masters/{mtype}/{key}` → `{key, item_id, versions: [VersionMeta], published_version}`
 - `GET /api/masters/{mtype}/{key}/versions/{no}` → `Version` (meta + payload)

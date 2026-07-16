@@ -72,6 +72,13 @@ def test_lifecycle_maker_checker(admin_headers, admin2_headers, analyst_headers)
         r = c.get("/api/masters/doctypes/audited_financials/versions/3", headers=analyst_headers)
         assert r.status_code == 403
 
+        # list summary carries SCALAR version fields (contract: the SPA renders them)
+        listing = c.get("/api/masters/doctypes", headers=analyst_headers).json()
+        entry = next(i for i in listing if i["key"] == "audited_financials")
+        assert entry["latest_version"] == 3 and entry["published_version"] == 2
+        assert entry["latest_status"] == "draft"
+        assert isinstance(entry["latest_version"], int)
+
 
 def test_prompt_placeholder_validation(admin_headers):
     with TestClient(mc.app) as c:

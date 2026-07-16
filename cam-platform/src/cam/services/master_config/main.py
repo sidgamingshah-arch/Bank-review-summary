@@ -287,7 +287,8 @@ def list_items(mtype_segment: str, principal: Principal = Depends(require("maste
             published = eng.published_version(db, item)
             latest = max(versions, key=lambda v: v.version_no) if versions else None
             out.append({"key": item.key, "item_id": item.id,
-                        "latest_version": latest.meta() if latest else None,
+                        "latest_version": latest.version_no if latest else None,
+                        "latest_status": latest.status if latest else None,
                         "published_version": published.version_no if published else None,
                         "updated_at": iso(max(v.created_at for v in versions)) if versions else None})
         return out
