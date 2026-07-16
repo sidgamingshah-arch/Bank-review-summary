@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cam-backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cam-platform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+      - name: Unit & service tests
+        run: .venv/bin/pytest
+      - name: End-to-end acceptance walkthrough (BRD §9)
+        run: .venv/bin/python scripts/e2e_demo.py
+
+  cam-frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cam-platform/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - name: Typecheck + production build
+        run: npm run build

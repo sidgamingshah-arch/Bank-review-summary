@@ -13,14 +13,15 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+node_modules/
+
+# CAM platform local data (SQLite, blobs, exports, logs)
+.data*/
 
 # App data / secrets
 .env
 secrets.env
 *.local.env
-backend/data/
-*.docx
-!tests/**/*.docx
 
 # OS
 .DS_Store

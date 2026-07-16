@@ -1,0 +1,113 @@
+# Containerised topology (NFR-12): PostgreSQL as system-of-record (NFR-03),
+# one built image running each service as its own container, all traffic
+# entering through the gateway (APIM stand-in, NFR-04).
+#
+#   docker compose up --build
+#   python scripts/seed_demo.py        # then seed masters through the gateway
+#
+# Dev note: services share one PostgreSQL database in this compose file (table
+# ownership stays strictly per-service); production splits into per-service
+# schemas/databases — see docs/adr/0004-persistence.md. The front-end runs
+# `npm run dev` against http://localhost:8080 or is built and served by any
+# static host.
+
+x-service: &service
+  build: .
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment: &service-env
+    CAM_JWT_SECRET: ${CAM_JWT_SECRET:-dev-only-secret-do-not-use-in-production}
+    CAM_DB_URL: postgresql+psycopg://cam:cam@postgres:5432/cam
+    CAM_GATEWAY_URL: http://gateway:8000
+    CAM_DATA_DIR: /data
+    CAM_LLM_PROVIDER: ${CAM_LLM_PROVIDER:-mock}
+    CAM_GENAI_MODEL: ${CAM_GENAI_MODEL:-claude-opus-4-8}
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  volumes:
+    - cam-data:/data
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cam
+      POSTGRES_PASSWORD: cam
+      POSTGRES_DB: cam
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cam"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  gateway:
+    <<: *service
+    ports:
+      - "8080:8000"
+    environment:
+      <<: *service-env
+      SERVICE_MODULE: cam.gateway.main:app
+      CAM_ROUTE_AUTH: http://auth:8000
+      CAM_ROUTE_MASTERS: http://master-config:8000
+      CAM_ROUTE_DOCUMENT: http://document:8000
+      CAM_ROUTE_TAGGING: http://tagging:8000
+      CAM_ROUTE_ORCHESTRATION: http://orchestration:8000
+      CAM_ROUTE_GENAI: http://genai:8000
+      CAM_ROUTE_OUTPUT: http://output:8000
+      CAM_ROUTE_AUDIT: http://audit:8000
+
+  auth:
+    <<: *service
+    environment:
+      <<: *service-env
+      SERVICE_MODULE: cam.services.auth.main:app
+
+  master-config:
+    <<: *service
+    environment:
+      <<: *service-env
+      SERVICE_MODULE: cam.services.master_config.main:app
+
+  document:
+    <<: *service
+    environment:
+      <<: *service-env
+      SERVICE_MODULE: cam.services.document.main:app
+
+  tagging:
+    <<: *service
+    environment:
+      <<: *service-env
+      SERVICE_MODULE: cam.services.tagging.main:app
+
+  orchestration:
+    <<: *service
+    environment:
+      <<: *service-env
+      SERVICE_MODULE: cam.services.orchestration.main:app
+      CAM_WORKER_CONCURRENCY: "2"
+
+  genai:
+    <<: *service
+    environment:
+      <<: *service-env
+      SERVICE_MODULE: cam.services.genai.main:app
+
+  output:
+    <<: *service
+    environment:
+      <<: *service-env
+      SERVICE_MODULE: cam.services.output.main:app
+
+  audit:
+    <<: *service
+    environment:
+      <<: *service-env
+      SERVICE_MODULE: cam.services.audit.main:app
+
+volumes:
+  pg-data:
+  cam-data:
