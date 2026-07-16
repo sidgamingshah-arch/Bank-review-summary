@@ -24,6 +24,3 @@ make e2e         # automated BRD §9 acceptance walkthrough (all 9 services)
 | Check requirement-by-requirement status vs the BRD | [cam-platform/docs/traceability.md](cam-platform/docs/traceability.md) |
 | Read the service/API contracts | [cam-platform/docs/contracts.md](cam-platform/docs/contracts.md) |
 | Understand key decisions | [cam-platform/docs/adr/](cam-platform/docs/adr/) |
-
-`backend/` is an unrelated earlier utility kept in this repository; it is not
-part of the CAM platform.
