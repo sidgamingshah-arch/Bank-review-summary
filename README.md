@@ -1,3 +1,14 @@
+# Bank Review & CAM Generation
+
+Two related deliverables live in this repository:
+
+| Directory | What it is |
+|---|---|
+| [`cam-platform/`](cam-platform/) | **AI-Assisted Credit Assessment Memo (CAM) Generation Platform** — the full BRD-driven product: microservices (masters with maker-checker, VAF document intake + auto-tagging, async section generation, GenAI gateway, human-in-the-loop editor with tracked suggestions, hash-chained audit), React front-end, and an automated BRD §9 acceptance suite. Start at [cam-platform/README.md](cam-platform/README.md). |
+| [`backend/`](backend/) | The earlier single-purpose **ASM review-note generator** prototype (below) — precursor whose provider-layer and provenance-verification ideas the platform generalises. |
+
+---
+
 # Bank ASM Review-Note Generator
 
 LLM **extraction + reasoning** pipeline that turns ASM / stock-audit report PDFs (plus a
