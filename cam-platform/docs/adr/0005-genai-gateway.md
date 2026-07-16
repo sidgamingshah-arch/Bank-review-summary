@@ -24,7 +24,7 @@ depend on a live model endpoint.
   figures; default for dev/CI/demo) and `anthropic` (official SDK, default
   model `claude-opus-4-8`, sampling params withheld on models that reject
   them, refusals surfaced as flagged failures). Bedrock/Vertex are provider
-  additions behind the same interface, mirroring the ASM prototype's pattern.
+  additions behind the same interface.
 
 ## Consequences
 * The whole platform — including the acceptance suite — runs and is verified

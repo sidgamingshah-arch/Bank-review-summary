@@ -73,10 +73,3 @@ scripts/             run_stack.py · seed_demo.py · e2e_demo.py (AC-1…AC-5)
 tests/               64 tests across all services
 ```
 
-## Relationship to `../backend`
-
-`backend/` is the earlier single-purpose ASM review-note prototype. This
-platform generalises its proven ideas — pluggable LLM providers, provenance
-verification, section-wise structured drafting — into the configurable,
-multi-user, audited product the BRD describes. The prototype remains as-is; a
-future template pack can reproduce its ASM note inside this platform.
