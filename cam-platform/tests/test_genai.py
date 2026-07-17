@@ -78,6 +78,62 @@ def test_generate_rejects_user_tokens():
         assert r.status_code == 403  # NFR-10
 
 
+CATALOGUE = [
+    {"code": "security_valuation", "name": "Security valuation report",
+     "description": "collateral property valuation by an empanelled valuer",
+     "synonyms": ["valuation report"], "keywords": ["fair market value"]},
+    {"code": "kyc_pack", "name": "KYC pack",
+     "description": "know your customer identity documents",
+     "synonyms": [], "keywords": ["pan", "aadhaar"]},
+]
+
+
+def test_classify_endpoint_semantic_fallback(service_headers):
+    """A document whose filename reveals nothing and whose text contains no
+    exact master phrase still classifies via vocabulary overlap (the mock
+    provider's stand-in for real LLM semantics)."""
+    with TestClient(genai.app) as c:
+        r = c.post("/api/genai/classify", json={
+            "filename": "scan_221_final.pdf",
+            "text": ("The empanelled valuer inspected the collateral property and "
+                     "concluded a fair value of the premises for mortgage purposes."),
+            "doctypes": CATALOGUE}, headers=service_headers)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["code"] == "security_valuation"
+        assert 0 < body["confidence"] <= 1 and body["rationale"]
+
+        # nothing plausible -> null code, zero confidence (never invents)
+        r = c.post("/api/genai/classify", json={
+            "filename": "x.txt", "text": "completely unrelated gibberish zzz",
+            "doctypes": CATALOGUE}, headers=service_headers)
+        assert r.json()["code"] is None and r.json()["confidence"] == 0.0
+
+
+def test_classify_endpoint_rejects_invented_or_garbage(service_headers, monkeypatch):
+    from cam.services.genai.providers import GenResult
+
+    class FakeProvider:
+        model = "fake"
+
+        def classify(self, request, system, user):
+            return GenResult(content=self.reply, model="fake", usage={})
+
+    fake = FakeProvider()
+    monkeypatch.setattr(genai, "_provider", fake)
+    with TestClient(genai.app) as c:
+        fake.reply = '{"code": "not_in_catalogue", "confidence": 0.99, "rationale": "x"}'
+        r = c.post("/api/genai/classify", json={"filename": "a", "text": "b",
+                                                "doctypes": CATALOGUE}, headers=service_headers)
+        assert r.json()["code"] is None  # invented codes never pass through
+
+        fake.reply = "I think this is probably a KYC pack."
+        r = c.post("/api/genai/classify", json={"filename": "a", "text": "b",
+                                                "doctypes": CATALOGUE}, headers=service_headers)
+        assert r.json()["code"] is None and "not parseable" in r.json()["rationale"]
+    monkeypatch.setattr(genai, "_provider", None)  # restore lazy init
+
+
 def test_edit_endpoint_mock(service_headers):
     current = ("Revenue for FY2025 stood at Rs. 4,210 Cr, up 12.5%. "
                "EBITDA margin was 18.2%. Net debt Rs. 950 Cr. Equity Rs. 2,100 Cr.")

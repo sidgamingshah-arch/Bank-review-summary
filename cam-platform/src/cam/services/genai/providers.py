@@ -148,6 +148,34 @@ class MockProvider:
         return GenResult(content=content, model=self.model, rationale=rationale,
                          usage=_estimate_usage(system, user, content))
 
+    def classify(self, request: dict, system: str, user: str) -> GenResult:
+        """Deterministic semantic-ish fallback: bag-of-words overlap between the
+        document and each doctype's whole vocabulary (name, code, synonyms,
+        keywords AND description) — catches documents whose wording overlaps a
+        type without containing its exact master phrases."""
+        import json
+        import re
+
+        words = set(re.split(r"[^a-z0-9]+",
+                             f"{request.get('filename', '')} {request.get('text', '')}".lower()))
+        words.discard("")
+        best_code, best_overlap = None, 0
+        for doctype in request.get("doctypes") or []:
+            vocab = " ".join([doctype.get("code", "").replace("_", " "),
+                              doctype.get("name", ""), doctype.get("description", ""),
+                              " ".join(doctype.get("synonyms") or []),
+                              " ".join(doctype.get("keywords") or [])]).lower()
+            vocab_words = {w for w in re.split(r"[^a-z0-9]+", vocab) if len(w) > 2}
+            overlap = len(words & vocab_words)
+            if overlap > best_overlap:
+                best_code, best_overlap = doctype.get("code"), overlap
+        payload = {"code": best_code if best_overlap >= 3 else None,
+                   "confidence": round(best_overlap / (best_overlap + 3.0), 3),
+                   "rationale": (f"{best_overlap} vocabulary words overlap with "
+                                 f"'{best_code}'" if best_code else "no meaningful overlap")}
+        return GenResult(content=json.dumps(payload), model=self.model,
+                         usage=_estimate_usage(system, user, json.dumps(payload)))
+
 
 # ----------------------------------------------------------------- anthropic
 
@@ -202,6 +230,9 @@ class AnthropicProvider:
         result = self._call(request, system, user)
         result.rationale = "Revision proposed by the model per the analyst's instruction."
         return result
+
+    def classify(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
 
 
 def make_provider(settings: Settings):

@@ -64,6 +64,26 @@ def _cached(key: str, loader: Callable[[], Any]) -> Any:
     return value
 
 
+def llm_classify(filename: str, text: str, doctypes: list[dict]) -> dict | None:
+    """FR-C04 fallback: semantic classification via the GenAI gateway when
+    name/keyword matching reveals nothing usable. Fail-open — a broken or slow
+    model endpoint must never block document intake (monkeypatched in tests)."""
+    try:
+        payload = {"filename": filename, "text": (text or "")[:6000],
+                   "doctypes": [{"code": d.get("code", ""), "name": d.get("name", ""),
+                                 "description": d.get("description", ""),
+                                 "synonyms": d.get("synonyms") or [],
+                                 "keywords": d.get("keywords") or []}
+                                for d in doctypes if d.get("code")]}
+        with gateway_client(settings, timeout=60.0) as client:
+            resp = client.post("/api/genai/classify", json=payload,
+                               headers=gateway_headers(settings))
+            raise_for_error(resp, "genai classify")
+            return resp.json()
+    except Exception:
+        return None
+
+
 class ClassifyRequest(BaseModel):
     filename: str = ""
     text: str = ""
@@ -77,4 +97,23 @@ def classify_document(body: ClassifyRequest,
         raise ApiError.forbidden("internal endpoint (service token or business_admin)")
     doctypes = _cached("doctypes", lambda: fetch_published_doctypes())
     threshold = float(_cached("threshold", lambda: fetch_threshold()))
-    return classify(body.filename, body.text, doctypes, threshold)
+    result = classify(body.filename, body.text, doctypes, threshold)
+    result["llm_consulted"] = False
+
+    # Name/keyword matching is the explainable first pass; when it finds
+    # nothing (or only a below-threshold guess), consult the LLM classifier.
+    best = result["best"]
+    if best is None or best["confidence"] < threshold:
+        llm = llm_classify(body.filename, body.text, doctypes)
+        result["llm_consulted"] = llm is not None
+        if llm and llm.get("code"):
+            confidence = round(float(llm.get("confidence", 0.0)), 3)
+            if best is None or confidence > best["confidence"]:
+                result["best"] = {"doctype_code": llm["code"], "confidence": confidence,
+                                  "needs_review": confidence < threshold,
+                                  "method": "llm", "rationale": llm.get("rationale", "")}
+                others = [c for c in result["candidates"]
+                          if c["doctype_code"] != llm["code"]]
+                result["candidates"] = [{"doctype_code": llm["code"],
+                                         "confidence": confidence}, *others][:5]
+    return result

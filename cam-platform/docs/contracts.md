@@ -199,9 +199,14 @@ Accepted formats v1: `.pdf .docx .xlsx .csv .txt` · max 25 MB (or doctype `file
 ## 4. tagging (`/api/tagging`) — internal (service tokens; admins may call for testing)
 
 - `POST /api/tagging/classify` `{filename, text}` →
-  `{candidates: [{doctype_code, confidence: 0..1}], threshold, best: {doctype_code, confidence, needs_review}}`
-  Scoring: doctype synonyms/keywords vs filename (strong) + extracted text (weaker),
-  normalised 0..1. `needs_review = confidence < threshold` (threshold from master settings).
+  `{candidates: [{doctype_code, confidence: 0..1}], threshold, llm_consulted: bool,
+    best: {doctype_code, confidence, needs_review, method: "keyword"|"llm", rationale?}}`
+  Two-pass classification: (1) explainable name/synonym/keyword scoring vs filename
+  (strong) + extracted text (weaker), normalised 0..1; (2) when pass 1 finds nothing or
+  only a below-threshold guess, an LLM fallback via `POST /api/genai/classify`
+  `{filename, text, doctypes}` → `{code|null, confidence, rationale, model, usage}`
+  (model must pick from the catalogue or null; fail-open — intake never blocks on it).
+  `needs_review = confidence < threshold` (threshold from master settings).
 
 ---
 

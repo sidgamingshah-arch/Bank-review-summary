@@ -64,7 +64,7 @@ narrowing) · **▷ Deferred** (v1 scope decision, integration point in place).
 | FR-C01 | M | ✔ | drag-drop multi-file with per-file progress (SPA) | FE build |
 | FR-C02 | M | ✔ | strictly one file per backend request; VAF validate→scan→quarantine with visible reason | tests/test_document_service.py, e2e AC-2 |
 | FR-C03 | M | ✔ | repository pull through the same pipeline (`/cases/{id}/pull`); fixture-backed stand-in for the enterprise repository API | e2e AC-2 |
-| FR-C04 | M | ✔ | keyword/synonym scorer with confidence; admin threshold flags `needs_review` | tests/test_tagging_service.py |
+| FR-C04 | M | ✔ | two-pass: explainable keyword/synonym scorer, then LLM classification via the GenAI gateway when the name match reveals nothing or only a below-threshold guess (fail-open; method recorded on the tag audit) | tests/test_tagging_service.py, tests/test_genai.py |
 | FR-C05 | M | ✔ | many docs per type with period labels + ordering, used in grounding labels | e2e |
 | FR-C06 | M | ✔ | tag view/add/change/confirm/remove, all audited (`tag.*`) | tests, e2e |
 | FR-C07 | S | ✔ | sha256 duplicate detection — warn and proceed (`duplicate_of`) | tests/test_document_service.py |

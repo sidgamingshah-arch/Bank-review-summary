@@ -154,5 +154,6 @@ def process_file(db: Session, *, case: Case, filename: str, content: bytes,
         audit.emit(settings, action="tag.auto_applied", entity_type="tag",
                    entity_id=tag.id, principal=principal, case_id=case.id,
                    detail={"document_id": doc.id, "doctype_code": tag.doctype_code,
-                           "confidence": tag.confidence, "needs_review": tag.needs_review})
+                           "confidence": tag.confidence, "needs_review": tag.needs_review,
+                           "method": best.get("method", "keyword")})
     return doc

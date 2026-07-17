@@ -94,5 +94,6 @@ def classify(filename: str, text: str, doctypes: list[dict], threshold: float) -
 
     best = None
     if candidates:
-        best = {**candidates[0], "needs_review": candidates[0]["confidence"] < threshold}
+        best = {**candidates[0], "needs_review": candidates[0]["confidence"] < threshold,
+                "method": "keyword"}
     return {"candidates": candidates, "threshold": threshold, "best": best}

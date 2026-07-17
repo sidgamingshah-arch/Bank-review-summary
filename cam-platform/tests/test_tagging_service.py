@@ -137,13 +137,13 @@ def test_classify_endpoint_contract_shape(client, mocked_masters):
                        headers=SERVICE)
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert set(body) == {"candidates", "threshold", "best"}
+    assert set(body) == {"candidates", "threshold", "best", "llm_consulted"}
     assert body["threshold"] == 0.6
     # filename 'annual report' (3.0) + text 'balance sheet' (1.0)
     # + 'profit and loss' (1.0) = 5.0 -> 5/9 = 0.556 < 0.6 -> needs review
     assert body["best"] == {"doctype_code": "financials",
                             "confidence": round(5.0 / 9.0, 3),
-                            "needs_review": True}
+                            "needs_review": True, "method": "keyword"}
     assert body["candidates"][0]["doctype_code"] == "financials"
     assert all(set(c) == {"doctype_code", "confidence"} for c in body["candidates"])
 
@@ -179,3 +179,76 @@ def test_masters_lookups_cached_for_60s(client, monkeypatch):
 
 def test_threshold_fallback_default():
     assert tag_main.DEFAULT_THRESHOLD == 0.55
+
+
+# ---------------------------------------------------------------- llm fallback
+
+def test_llm_fallback_used_when_keyword_misses(client, mocked_masters, monkeypatch):
+    calls = []
+
+    def fake_llm(filename, text, doctypes):
+        calls.append(filename)
+        return {"code": "stock", "confidence": 0.82, "rationale": "inventory-like content"}
+
+    monkeypatch.setattr(tag_main, "llm_classify", fake_llm)
+    body = client.post("/api/tagging/classify",
+                       json={"filename": "scan_991.pdf",
+                            "text": "goods lying at the godown were physically verified"},
+                       headers=SERVICE).json()
+    assert calls, "LLM must be consulted when keyword scoring finds nothing"
+    assert body["llm_consulted"] is True
+    assert body["best"] == {"doctype_code": "stock", "confidence": 0.82,
+                            "needs_review": False, "method": "llm",
+                            "rationale": "inventory-like content"}
+    assert body["candidates"][0] == {"doctype_code": "stock", "confidence": 0.82}
+
+
+def test_llm_fallback_below_threshold_flags_review(client, mocked_masters, monkeypatch):
+    monkeypatch.setattr(tag_main, "llm_classify",
+                        lambda f, t, d: {"code": "kyc", "confidence": 0.4, "rationale": ""})
+    body = client.post("/api/tagging/classify", json={"filename": "x.pdf", "text": "y"},
+                       headers=SERVICE).json()
+    assert body["best"]["method"] == "llm" and body["best"]["needs_review"] is True
+
+
+def test_llm_not_consulted_when_keyword_confident(client, mocked_masters, monkeypatch):
+    def boom(filename, text, doctypes):
+        raise AssertionError("LLM must not be consulted for a confident keyword match")
+
+    monkeypatch.setattr(tag_main, "llm_classify", boom)
+    body = client.post("/api/tagging/classify",
+                       json={"filename": "annual_report.pdf",
+                             "text": "balance sheet profit and loss balance sheet"},
+                       headers=SERVICE).json()
+    assert body["llm_consulted"] is False
+    assert body["best"]["method"] == "keyword" and body["best"]["needs_review"] is False
+
+
+def test_llm_failure_keeps_keyword_result(client, mocked_masters, monkeypatch):
+    monkeypatch.setattr(tag_main, "llm_classify", lambda f, t, d: None)  # gateway down
+    body = client.post("/api/tagging/classify",
+                       json={"filename": "annual_report.pdf", "text": ""},
+                       headers=SERVICE).json()
+    assert body["llm_consulted"] is False
+    assert body["best"]["doctype_code"] == "financials"          # weak keyword hit survives
+    assert body["best"]["method"] == "keyword" and body["best"]["needs_review"] is True
+
+
+def test_llm_weaker_or_null_never_downgrades_keyword(client, mocked_masters, monkeypatch):
+    # LLM returns a lower-confidence guess than the (weak) keyword best -> keyword kept
+    monkeypatch.setattr(tag_main, "llm_classify",
+                        lambda f, t, d: {"code": "kyc", "confidence": 0.1, "rationale": ""})
+    body = client.post("/api/tagging/classify",
+                       json={"filename": "annual_report.pdf", "text": ""},
+                       headers=SERVICE).json()
+    assert body["llm_consulted"] is True
+    assert body["best"]["doctype_code"] == "financials"
+    assert body["best"]["method"] == "keyword"
+
+    # LLM abstains (null code) -> keyword result untouched
+    monkeypatch.setattr(tag_main, "llm_classify",
+                        lambda f, t, d: {"code": None, "confidence": 0.0, "rationale": "none"})
+    body = client.post("/api/tagging/classify",
+                       json={"filename": "annual_report.pdf", "text": ""},
+                       headers=SERVICE).json()
+    assert body["best"]["doctype_code"] == "financials"

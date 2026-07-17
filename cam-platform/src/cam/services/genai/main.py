@@ -16,7 +16,8 @@ from cam.common.app_factory import create_app
 from cam.common.config import get_settings
 from cam.common.security import Principal, make_auth_dependencies
 
-from .assembly import build_edit_user, build_generate_user, build_system
+from .assembly import (CLASSIFY_SYSTEM, build_classify_user, build_edit_user,
+                       build_generate_user, build_system)
 from .providers import make_provider
 from .trace import untraceable_numbers
 
@@ -87,6 +88,49 @@ def generate(body: GenerateRequest, principal: Principal = Depends(require_servi
                                   [d["text"] for d in request["grounding_docs"]], context)
     return {"content": result.content, "model": result.model, "usage": result.usage,
             "untraceable_numbers": flagged}
+
+
+class ClassifyDoctype(BaseModel):
+    code: str
+    name: str = ""
+    description: str = ""
+    synonyms: list[str] = []
+    keywords: list[str] = []
+
+
+class ClassifyRequest(BaseModel):
+    filename: str = ""
+    text: str = ""
+    doctypes: list[ClassifyDoctype] = Field(min_length=1)
+
+
+@app.post("/api/genai/classify")
+def classify(body: ClassifyRequest, principal: Principal = Depends(require_service)):
+    """Semantic document classification against the doc-type master — the
+    fallback the tagging service uses when name/keyword matching reveals
+    nothing (FR-C04). The model must pick from the supplied catalogue or
+    return null; unparseable or invented codes degrade to null (fail-open)."""
+    import json
+
+    request = body.model_dump()
+    user = build_classify_user(request["filename"], request["text"], request["doctypes"])
+    result = get_provider().classify(request, CLASSIFY_SYSTEM, user)
+
+    code, confidence, rationale = None, 0.0, "model reply was not parseable"
+    raw = result.content.strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`").lstrip("json").strip()
+    try:
+        parsed = json.loads(raw)
+        valid_codes = {d["code"] for d in request["doctypes"]}
+        if parsed.get("code") in valid_codes:
+            code = parsed["code"]
+        confidence = max(0.0, min(1.0, float(parsed.get("confidence", 0.0))))
+        rationale = str(parsed.get("rationale", ""))[:300]
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return {"code": code, "confidence": confidence if code else 0.0,
+            "rationale": rationale, "model": result.model, "usage": result.usage}
 
 
 @app.post("/api/genai/edit")
