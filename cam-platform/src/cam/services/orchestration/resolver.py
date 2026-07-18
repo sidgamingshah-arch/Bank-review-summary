@@ -77,3 +77,29 @@ def push_section_version(cam_id: str, section_id: str, content: str) -> dict:
                            headers=gateway_headers(settings))
         raise_for_error(resp, "section version push")
         return resp.json()
+
+
+def create_cam_section(cam_id: str, payload: dict) -> dict:
+    """Late-arrival join: a retried section completes AFTER its CAM exists."""
+    with gateway_client(settings) as client:
+        resp = client.post(f"/api/cams/{cam_id}/sections", json=payload,
+                           headers=gateway_headers(settings))
+        raise_for_error(resp, "cam section add")
+        return resp.json()
+
+
+def update_case_status(case_id: str, status: str) -> None:
+    """Advisory case-lifecycle notification — fail-open by design: a broken
+    status update never blocks or fails a generation run."""
+    import logging
+
+    try:
+        with gateway_client(settings, timeout=10.0) as client:
+            resp = client.patch(f"/api/cases/{case_id}/status", json={"status": status},
+                                headers=gateway_headers(settings))
+            if resp.status_code >= 400:
+                logging.getLogger("cam.orchestration").warning(
+                    "case status update failed (%s) for case %s", resp.status_code, case_id)
+    except Exception:
+        logging.getLogger("cam.orchestration").warning(
+            "case status update unreachable for case %s", case_id)

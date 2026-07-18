@@ -115,7 +115,7 @@ narrowing) · **▷ Deferred** (v1 scope decision, integration point in place).
 | ID | Pri | Status | Implementation / notes | Verified |
 |---|---|---|---|---|
 | NFR-01 | M | ✔ | React SPA (Vite+TS), desktop-first, zero-error build | FE build (CI) |
-| NFR-02 | M | ✔ | 8 services + gateway, async DB-backed generation queue (ADR-0001/0004) | e2e |
+| NFR-02 | M | ✔ | 8 services + gateway, async DB-backed generation queue with worker lease + reaper recovery and attempt caps (ADR-0001/0004) | e2e, tests/test_product_hardening.py |
 | NFR-03 | M | ✔ | PostgreSQL in compose (SQLite dev); binaries/extracts in blob storage, never DB | ADR-0004 |
 | NFR-04 | M | ✔ | all calls (FE→BE and service→service) traverse the gateway/APIM stand-in with authN, throttling, logging (ADR-0002) | e2e |
 | NFR-05 | M | ✔ | BRD §4 matrix as data, enforced everywhere; SSO adapter swappable | tests (denials), e2e |

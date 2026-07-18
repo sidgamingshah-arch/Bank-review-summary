@@ -258,6 +258,88 @@ def sandbox_test(key: str, body: SandboxRequest,
             "usage": result.get("usage", {}), "version_tested": version.version_no}
 
 
+# ------------------------------------------------------- configuration portability
+
+class BundleEntry(BaseModel):
+    mtype: str  # internal type name: prompt|template|doctype|industry|kpi_set
+    key: str
+    payload: dict
+
+
+class BundleImport(BaseModel):
+    masters: list[BundleEntry]
+
+
+# import order honours referential validation: doc types and taxonomy first,
+# then prompts (validated against doc types), KPI sets (against taxonomy),
+# templates last (against prompts + doc types)
+_IMPORT_ORDER = {"doctype": 0, "industry": 1, "prompt": 2, "kpi_set": 3, "template": 4}
+
+
+@app.get("/api/masters/export-bundle")
+def export_bundle(principal: Principal = Depends(require("masters:read"))):
+    """Environment portability (deploy-time configuration swap): every
+    currently-published master as one JSON bundle, plus settings."""
+    if not (principal.can("masters:settings") or principal.can("audit:export")
+            or principal.is_service):
+        raise ApiError.forbidden("bundle export is for business-admin/auditor roles")
+    with SessionLocal() as db:
+        masters = []
+        for item in db.scalars(select(MasterItem).order_by(MasterItem.mtype,
+                                                           MasterItem.key)).all():
+            version = eng.published_version(db, item)
+            if version:
+                masters.append({"mtype": item.mtype, "key": item.key,
+                                "version": version.version_no, "payload": version.payload})
+        stored = {s.key: s.value.get("value") for s in db.scalars(select(Setting)).all()}
+    audit.emit(settings, action="master.bundle_exported", entity_type="masters",
+               entity_id="bundle", principal=principal, detail={"count": len(masters)})
+    return {"platform": "cam-platform", "bundle_version": 1,
+            "masters": masters, "settings": {**DEFAULT_SETTINGS, **stored}}
+
+
+@app.post("/api/masters/import-bundle")
+def import_bundle(body: BundleImport,
+                  principal: Principal = Depends(require("masters:draft"))):
+    """Import a bundle as DRAFTS — maker-checker still governs publication.
+    Entries identical to the current published payload are skipped."""
+    created, updated, unchanged, errors = [], [], [], []
+    entries = sorted(body.masters, key=lambda e: _IMPORT_ORDER.get(e.mtype, 9))
+    with SessionLocal() as db:
+        for entry in entries:
+            ref = f"{entry.mtype}:{entry.key}"
+            if entry.mtype not in _IMPORT_ORDER:
+                errors.append({"entry": ref, "message": "unknown master type"})
+                continue
+            normalised, verrors = validate_payload(entry.mtype, entry.key, entry.payload,
+                                                   **_catalogue(db))
+            if verrors:
+                errors.append({"entry": ref, "message": "; ".join(verrors)})
+                continue
+            item = eng.get_item(db, entry.mtype, entry.key)
+            if item:
+                published = eng.published_version(db, item)
+                if published and published.payload == normalised:
+                    unchanged.append(ref)
+                    continue
+                version = eng.add_version(db, item, normalised, "bundle import",
+                                          principal.username)
+                updated.append({"entry": ref, "version_no": version.version_no})
+            else:
+                _, version = eng.create_item(db, entry.mtype, entry.key, normalised,
+                                             "bundle import", principal.username)
+                created.append({"entry": ref, "version_no": version.version_no})
+            db.flush()  # catalogue grows as the bundle imports (ordering above)
+        db.commit()
+    audit.emit(settings, action="master.bundle_imported", entity_type="masters",
+               entity_id="bundle", principal=principal,
+               detail={"created": len(created), "updated": len(updated),
+                       "unchanged": len(unchanged), "errors": len(errors)})
+    return {"created": created, "updated": updated, "unchanged": unchanged,
+            "errors": errors,
+            "note": "imported versions are drafts; submit + approve to publish"}
+
+
 # ---------------------------------------------------------------- generic master routes
 
 class ItemCreate(BaseModel):

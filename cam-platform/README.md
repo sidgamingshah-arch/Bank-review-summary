@@ -49,6 +49,20 @@ CAM_LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=... make stack
 
 Bedrock/Vertex are provider additions behind the same interface (ADR-0005).
 
+## Moving configuration between environments
+
+The seeded masters are a sample. At deployment, export the governed
+configuration from one environment and import it into another — imports land
+as **drafts**, so the target environment's maker-checker still controls what
+goes live:
+
+```bash
+python scripts/masters_bundle.py export bundle.json --user admin1
+python scripts/masters_bundle.py import bundle.json --user admin1 --gateway https://target:8080
+```
+
+(`GET /api/masters/export-bundle` / `POST /api/masters/import-bundle` for CI-driven promotion.)
+
 ## Layout
 
 ```

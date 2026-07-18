@@ -196,7 +196,7 @@ export interface Case {
   segment: CaseSegment;
   relationship: CaseRelationship;
   industry_code: string;
-  status: 'open' | 'generating' | 'finalised';
+  status: 'open' | 'generating' | 'drafted' | 'finalised';
   created_by: string;
   created_at: string;
 }

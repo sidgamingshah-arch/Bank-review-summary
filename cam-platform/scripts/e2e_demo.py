@@ -157,6 +157,14 @@ def ac1_masters(client: httpx.Client) -> None:
     assert "amended" in diff
     ok("AC1", f"rollback demonstrated: v{v2} (amended) → v{v3} restores v1 payload; diff view works")
 
+    # configuration portability: published masters export/import as a bundle
+    bundle = client.get(f"{GATEWAY}/api/masters/export-bundle", headers=admin1).json()
+    report = client.post(f"{GATEWAY}/api/masters/import-bundle", headers=admin1,
+                         json={"masters": bundle["masters"]}).json()
+    assert report["errors"] == [] and report["created"] == [] and report["updated"] == []
+    ok("AC1", f"masters bundle: {len(bundle['masters'])} published masters export/import "
+              "round-trip cleanly (identical entries skipped)")
+
 
 def ac2_case_to_download(client: httpx.Client, samples: dict) -> tuple[dict, str, dict]:
     print("\nAC-2 — upload → auto-tag → correct → generate → edit → finalise → download")
@@ -230,8 +238,10 @@ def ac2_case_to_download(client: httpx.Client, samples: dict) -> tuple[dict, str
     assert statuses.pop("project_review") == "skipped"  # conditional section, no DPR on case
     assert set(statuses.values()) == {"complete"}
     assert run["cam_id"]
+    case_state = client.get(f"{GATEWAY}/api/cases/{case['id']}", headers=analyst).json()
+    assert case_state["status"] == "drafted", case_state["status"]
     ok("AC2", f"async generation complete: {len(statuses)} sections drafted, 1 conditional "
-              f"section skipped, model={run['model_identity']}")
+              f"section skipped, model={run['model_identity']}; case moved to 'drafted'")
     return case, run["id"], client.get(f"{GATEWAY}/api/cams/{run['cam_id']}",
                                        headers=analyst).json()
 
@@ -303,6 +313,8 @@ def ac3_workspace(client: httpx.Client, samples: dict, case: dict, run_id: str,
     (EXPORT_DIR / "CAM_Acme_draft.docx").write_bytes(draft_docx.content)
     (EXPORT_DIR / "CAM_Acme_final.docx").write_bytes(final_docx.content)
     (EXPORT_DIR / "CAM_Acme_final.pdf").write_bytes(final_pdf.content)
+    case_state = client.get(f"{GATEWAY}/api/cases/{case['id']}", headers=analyst).json()
+    assert case_state["status"] == "finalised", case_state["status"]
     ok("AC3", f"finalised; DOCX ({len(final_docx.content)//1024} KB) and PDF "
               f"({len(final_pdf.content)//1024} KB) downloaded to {EXPORT_DIR}")
     return {"cam_id": cam_id}

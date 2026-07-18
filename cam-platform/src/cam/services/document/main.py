@@ -110,6 +110,28 @@ def list_cases(principal: Principal = Depends(require("case:read"))):
         return [c.to_dict() for c in db.scalars(q).all()]
 
 
+class CaseStatusPatch(BaseModel):
+    status: Literal["open", "generating", "drafted", "finalised"]
+
+
+@app.patch("/api/cases/{case_id}/status")
+def patch_case_status(case_id: str, body: CaseStatusPatch,
+                      principal: Principal = Depends(require_service)):
+    """Case lifecycle notifications from orchestration (generating/drafted)
+    and output (finalised). Service-internal; advisory state for the UI."""
+    with SessionLocal() as db:
+        case = db.get(Case, case_id)
+        if not case:
+            raise ApiError.not_found("case")
+        before = case.status
+        case.status = body.status
+        db.commit()
+        audit.emit(settings, action="case.status_changed", entity_type="case",
+                   entity_id=case.id, principal=principal, case_id=case.id,
+                   detail={"before": before, "after": body.status})
+        return case.to_dict()
+
+
 @app.get("/api/cases/{case_id}")
 def get_case(case_id: str, principal: Principal = Depends(require("case:read"))):
     with SessionLocal() as db:

@@ -5,6 +5,7 @@ export (FR-E07/E08). Contract: docs/contracts.md §7 (`/api/cams`).
 from __future__ import annotations
 
 import difflib
+import logging
 from typing import Literal
 
 from fastapi import Depends, Query, Response
@@ -51,6 +52,22 @@ def genai_edit(payload: dict) -> dict:
         resp = client.post("/api/genai/edit", json=payload, headers=gateway_headers(settings))
         raise_for_error(resp, "genai edit")
         return resp.json()
+
+
+log = logging.getLogger("cam.output")
+
+
+def update_case_status(case_id: str, status: str) -> None:
+    """Advisory case-lifecycle notification to the document service —
+    fail-open: a broken status update must never block CAM operations."""
+    try:
+        with gateway_client(settings, timeout=10.0) as client:
+            resp = client.patch(f"/api/cases/{case_id}/status", json={"status": status},
+                                headers=gateway_headers(settings))
+            if resp.status_code >= 400:
+                log.warning("case status update failed (%s): %s", resp.status_code, case_id)
+    except Exception:
+        log.warning("case status update unreachable for case %s", case_id)
 
 
 def fetch_document_text(doc_id: str) -> str:
@@ -217,6 +234,54 @@ def create_cam(body: CamCreate, principal: Principal = Depends(require_service))
                    detail={"template_key": cam.template_key,
                            "section_codes": [s.section_code for s in body.sections]})
         return _cam_json(db, cam)
+
+
+class SectionAdd(BaseModel):
+    section_code: str
+    name: str = ""
+    order: int = 0
+    content: str = ""
+    fixed_format: bool = False
+
+
+@app.post("/api/cams/{cam_id}/sections", status_code=201)
+def add_section(cam_id: str, body: SectionAdd,
+                principal: Principal = Depends(require_service)):
+    """Late-arrival path: a section that failed during the original run and
+    was retried to completion joins its CAM afterwards. If the section already
+    exists, the fresh draft lands as a new version instead (idempotent for
+    orchestration retries)."""
+    with SessionLocal() as db:
+        cam = db.get(Cam, cam_id)
+        if not cam:
+            raise ApiError.not_found("cam")
+        _ensure_editable(cam)
+        existing = db.scalar(select(CamSection).where(
+            CamSection.cam_id == cam.id, CamSection.section_code == body.section_code))
+        if existing:
+            version = _append_version(db, existing, content=body.content,
+                                      source="regeneration", created_by=principal.username)
+            db.commit()
+            audit.emit(settings, action="cam.section_edited", entity_type="cam_section",
+                       entity_id=existing.id, principal=principal, case_id=cam.case_id,
+                       run_id=cam.run_id, cam_id=cam.id,
+                       detail={"section_code": body.section_code, "source": "regeneration",
+                               "version_no": version.version_no})
+            return {"section_id": existing.id, "version_no": version.version_no,
+                    "created": False}
+        section = CamSection(cam_id=cam.id, section_code=body.section_code,
+                             name=body.name or body.section_code, order_no=body.order,
+                             fixed_format=body.fixed_format, current_version_no=1)
+        db.add(section)
+        db.flush()
+        db.add(SectionVersion(section_id=section.id, version_no=1, content=body.content,
+                              source="generated", created_by=principal.username))
+        db.commit()
+        audit.emit(settings, action="cam.section_added", entity_type="cam_section",
+                   entity_id=section.id, principal=principal, case_id=cam.case_id,
+                   run_id=cam.run_id, cam_id=cam.id,
+                   detail={"section_code": body.section_code, "order": body.order})
+        return {"section_id": section.id, "version_no": 1, "created": True}
 
 
 @app.get("/api/cams")
@@ -528,6 +593,7 @@ def finalise(cam_id: str, principal: Principal = Depends(require("cam:finalise")
         audit.emit(settings, action="cam.finalised", entity_type="cam", entity_id=cam.id,
                    principal=principal, case_id=cam.case_id, run_id=cam.run_id,
                    cam_id=cam.id, detail={})
+        update_case_status(cam.case_id, "finalised")
         return _cam_json(db, cam)
 
 

@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
+import time
+from datetime import timedelta
 
 from sqlalchemy import select
 
@@ -27,6 +30,14 @@ _finalize_lock = threading.Lock()
 # bound at import time by main.py (single SessionLocal for service + worker)
 SessionLocal = None
 settings = None
+
+# Recovery policy: a job claimed longer than the lease with no terminal state
+# means its worker died mid-flight. It is re-queued until the attempt cap,
+# then failed loudly (visible on the run, retryable by the analyst).
+JOB_LEASE_SECONDS = int(os.environ.get("CAM_JOB_LEASE_SECONDS", "600"))
+MAX_SECTION_ATTEMPTS = int(os.environ.get("CAM_MAX_SECTION_ATTEMPTS", "3"))
+_REAP_INTERVAL_SECONDS = 30.0
+_last_reap = 0.0
 
 
 def render_kpi_block(kpis: list[dict], section_code: str) -> str:
@@ -86,11 +97,51 @@ def _claim_next() -> str | None:
             return None
         job.status = "running"
         job.attempts += 1
+        job.claimed_at = utcnow()
         run = db.get(Run, job.run_id)
         if run.status == "queued":
             run.status = "running"
         db.commit()
         return job.id
+
+
+def reap_stuck_jobs() -> int:
+    """Requeue (or fail, past the attempt cap) jobs whose worker died holding
+    the claim. Returns the number of jobs touched."""
+    cutoff = utcnow() - timedelta(seconds=JOB_LEASE_SECONDS)
+    touched: list[str] = []
+    with _claim_lock, SessionLocal() as db:
+        stuck = list(db.scalars(select(SectionJob).where(
+            SectionJob.status == "running", SectionJob.claimed_at.isnot(None),
+            SectionJob.claimed_at < cutoff)).all())
+        for job in stuck:
+            if job.attempts >= MAX_SECTION_ATTEMPTS:
+                job.status = "failed"
+                job.error = (f"worker lost after {job.attempts} attempt(s); "
+                             f"lease of {JOB_LEASE_SECONDS}s expired")
+            else:
+                job.status = "queued"
+                job.claimed_at = None
+            touched.append(job.id)
+        db.commit()
+        failed_ids = [j.id for j in stuck if j.status == "failed"]
+    for job_id in touched:
+        log.warning("reaper recovered stuck section job %s", job_id)
+    for job_id in failed_ids:
+        # a terminal failure may complete its run — settle it
+        _after_section(job_id)
+    return len(touched)
+
+
+def _maybe_reap() -> None:
+    global _last_reap
+    now = time.monotonic()
+    if now - _last_reap >= _REAP_INTERVAL_SECONDS:
+        _last_reap = now
+        try:
+            reap_stuck_jobs()
+        except Exception:  # pragma: no cover - defensive
+            log.exception("reaper sweep failed")
 
 
 def _section_payload(run: Run, job: SectionJob) -> dict:
@@ -182,7 +233,9 @@ def _after_section(job_id: str) -> None:
         run = db.get(Run, job.run_id)
 
     if job.kind == "regeneration" or (run.cam_id and job.status == "complete"):
-        # a CAM already exists — push the fresh draft as a new section version
+        # a CAM already exists — the fresh draft joins it: as a new version of
+        # the matching section, or as a late-arriving section (a retried
+        # failure was never part of the original handoff)
         if run.cam_id and job.status == "complete":
             try:
                 cam = resolver.fetch_cam(run.cam_id)
@@ -190,13 +243,23 @@ def _after_section(job_id: str) -> None:
                               if s["section_code"] == job.section_code), None)
                 if match:
                     resolver.push_section_version(run.cam_id, match["id"], job.content)
-                    audit.emit(settings, action="run.section_regenerated",
-                               entity_type="run_section",
-                               entity_id=f"{run.id}:{job.section_code}",
-                               case_id=run.case_id, run_id=run.id, cam_id=run.cam_id,
-                               detail={"section": job.section_code})
+                else:
+                    resolver.create_cam_section(run.cam_id, {
+                        "section_code": job.section_code, "name": job.name,
+                        "order": job.order_no, "content": job.content or "",
+                        "fixed_format": job.fixed_format})
+                audit.emit(settings, action="run.section_regenerated",
+                           entity_type="run_section",
+                           entity_id=f"{run.id}:{job.section_code}",
+                           case_id=run.case_id, run_id=run.id, cam_id=run.cam_id,
+                           detail={"section": job.section_code,
+                                   "late_join": match is None})
             except Exception:
                 log.exception("failed to push regenerated section to output service")
+        if job.kind == "initial":
+            # a retried section still settles its run's status (running -> a
+            # terminal state) even though the CAM handoff already happened
+            _maybe_finalize(run.id)
         return
 
     _maybe_finalize(run.id)
@@ -216,13 +279,22 @@ def _maybe_finalize(run_id: str) -> None:
                 return
             complete = [s for s in sections if s.status == "complete"]
             failed = [s for s in sections if s.status == "failed"]
-            run.status = "failed" if not complete else ("partial" if failed else "complete")
-            db.commit()
+            new_status = "failed" if not complete else ("partial" if failed else "complete")
+            if not complete or run.cam_id:
+                # no CAM handoff to sequence — commit the terminal status now
+                run.status = new_status
+                db.commit()
 
         if not complete:
             audit.emit(settings, action="run.completed", entity_type="run", entity_id=run.id,
                        case_id=run.case_id, run_id=run.id,
                        detail={"status": "failed", "master_versions": run.master_versions})
+            resolver.update_case_status(run.case_id, "open")
+            return
+
+        if run.cam_id:
+            # late settle after a retry — the CAM was already delivered; only
+            # the run status needed updating (partial -> complete, etc.)
             return
 
         cam_sections = [{"section_code": s.section_code, "name": s.name, "order": s.order_no,
@@ -231,6 +303,9 @@ def _maybe_finalize(run_id: str) -> None:
         cam_sections.append({"section_code": "_gaps", "name": "Data Gaps & Disclosures",
                              "order": 9999, "content": build_gap_trailer(run, sections),
                              "fixed_format": True, "generated": True})
+        # Deliver the CAM BEFORE the run turns terminal: a poller that sees a
+        # terminal run status must be able to rely on cam_id being present.
+        cam_id = None
         try:
             cam = resolver.create_cam({
                 "case_id": run.case_id, "run_id": run.id,
@@ -238,13 +313,19 @@ def _maybe_finalize(run_id: str) -> None:
                 "template_key": run.template_key, "created_by": run.created_by,
                 "sections": cam_sections,
             })
-            with SessionLocal() as db:
-                fresh = db.get(Run, run_id)
-                fresh.cam_id = cam["id"]
-                db.commit()
-            run.cam_id = cam["id"]
+            cam_id = cam["id"]
         except Exception:
             log.exception("CAM handoff to output service failed for run %s", run_id)
+        with SessionLocal() as db:
+            fresh = db.get(Run, run_id)
+            fresh.status = new_status
+            if cam_id:
+                fresh.cam_id = cam_id
+            db.commit()
+        run.status = new_status
+        run.cam_id = cam_id
+        if cam_id:
+            resolver.update_case_status(run.case_id, "drafted")
 
         audit.emit(settings, action="run.completed", entity_type="run", entity_id=run.id,
                    case_id=run.case_id, run_id=run.id, cam_id=run.cam_id,
@@ -278,6 +359,8 @@ async def worker_loop(stop: asyncio.Event, worker_no: int) -> None:
     log.info("generation worker %d started", worker_no)
     while not stop.is_set():
         try:
+            if worker_no == 0:
+                await asyncio.to_thread(_maybe_reap)
             worked = await asyncio.to_thread(process_next)
         except Exception:
             log.exception("worker %d crashed on a job; continuing", worker_no)

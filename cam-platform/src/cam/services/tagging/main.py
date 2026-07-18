@@ -7,6 +7,7 @@ master-config and are cached briefly so a burst of uploads does not hammer it.
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Callable
 
@@ -27,7 +28,8 @@ current_principal, require, require_service = make_auth_dependencies(settings)
 app = create_app(settings, "CAM tagging service")
 
 DEFAULT_THRESHOLD = 0.55
-_CACHE_TTL_SECONDS = 60.0
+# Master changes (doctypes, threshold) reach tagging within this window.
+_CACHE_TTL_SECONDS = float(os.environ.get("CAM_TAGGING_CACHE_TTL_SECONDS", "60"))
 # key -> (fetched_at_monotonic, value)
 _cache: dict[str, tuple[float, Any]] = {}
 

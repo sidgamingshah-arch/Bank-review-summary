@@ -36,7 +36,7 @@ SERVICES = [
 class Stack:
     def __init__(self, data_dir: str | None = None, log_dir: str | None = None):
         self.data_dir = data_dir or str(ROOT / ".data-dev")
-        self.log_dir = Path(log_dir or (ROOT / ".data-dev" / "logs"))
+        self.log_dir = Path(log_dir or (Path(self.data_dir) / "logs"))
         self.procs: list[subprocess.Popen] = []
 
     def start(self, wait: bool = True) -> None:

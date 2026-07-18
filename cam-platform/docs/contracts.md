@@ -106,6 +106,12 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
 - `POST /api/masters/kpi-sets/bulk` (multipart `file`=CSV) → `{created:[], updated:[], errors:[{row, message}]}` (drafts only)
 - `GET /api/masters/kpi-sets/export.csv` → CSV of published KPI sets
 - `POST /api/masters/prompts/{key}/sandbox-test` `{sample_docs: [{doctype_code, text}], placeholders?: {}}` → `{content, model, usage}` (FR-A05; calls genai with the DRAFT latest version)
+- `GET /api/masters/export-bundle` (business_admin/auditor) → `{bundle_version, masters:
+  [{mtype, key, version, payload}], settings}` — every published master, for environment
+  portability. `POST /api/masters/import-bundle` `{masters}` (business_admin) → imports as
+  DRAFTS in dependency order (doctypes → industries → prompts → KPI sets → templates),
+  skipping entries identical to the published payload; maker-checker still governs
+  publication. CLI: `scripts/masters_bundle.py export|import bundle.json`.
 - `GET /api/masters/settings` → `{tagging_confidence_threshold: float, ...}` · `PUT /api/masters/settings` (business_admin)
 - `GET /api/masters/published/doctypes` → `[doctype payload]` (all currently-published doc types;
   used by tagging/document services — avoids N+1 version lookups)
@@ -181,8 +187,13 @@ extracts go to blob storage (`.data/blobs`, `.data/extracts`) — never the DB (
 - `GET /api/cases/{id}/completeness?template_key=<key>` →
   `{required: [doctype_code], present: [doctype_code], missing: [doctype_code], can_proceed: true}`
 
+- `PATCH /api/cases/{id}/status` (service only) `{status}` — lifecycle notifications:
+  orchestration sets `generating` (run started) / `drafted` (CAM handed off) / `open`
+  (run failed outright); output sets `finalised`. Advisory UI state, fail-open callers.
+
 ```
-Case     = {id, borrower_name, segment, relationship, industry_code, status: "open"|"generating"|"finalised",
+Case     = {id, borrower_name, segment, relationship, industry_code,
+            status: "open"|"generating"|"drafted"|"finalised",
             created_by, created_at}
 Document = {id, case_id, filename, content_type, size_bytes, sha256, status:
             "quarantined"|"ready"|"no_text", quarantine_reason: str|null, origin,
@@ -281,6 +292,10 @@ untraceable figures (FR-D05); then set `run.cam_id`.
 - `GET /api/cams/{id}/sections/{section_id}/diff?from=1&to=3` → `{diff}`
 - `POST /api/cams/{id}/sections/{section_id}/versions` (service; regeneration path)
   `{content, source: "regeneration"}` → `SectionVersion`
+- `POST /api/cams/{id}/sections` (service; late-arrival path) `{section_code, name,
+  order, content, fixed_format}` → adds a section that completed after the CAM was
+  created (retried failure); if the code already exists, appends a version instead.
+  Refused on finalised CAMs.
 - `POST /api/cams/{id}/chat` `{scope: "document"|"section", section_id?: str, message,`
   `attached_document_ids?: [doc_id]}` → `{message: ChatMessage, reply: ChatMessage, suggestion: Suggestion|null}`
   (fetches attached docs' text from document service as extra grounding — FR-E05;

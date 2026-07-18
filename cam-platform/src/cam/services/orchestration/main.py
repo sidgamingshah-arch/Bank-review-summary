@@ -68,16 +68,24 @@ class RunCreate(BaseModel):
 
 def _case_tags(documents: list[dict]) -> dict[str, list[dict]]:
     """doctype_code -> usable (non-quarantined) documents carrying that tag,
-    ordered for grounding (FR-C05 multiplicity with period labels)."""
+    ordered for grounding (FR-C05 multiplicity with period labels). Duplicate
+    content (same sha256) grounds a doctype once — dedupe warns-and-proceeds
+    at intake, but generation must not double-weight the same document."""
     by_type: dict[str, list[dict]] = {}
+    seen_content: dict[str, set[str]] = {}
     for doc in documents:
         if doc.get("status") == "quarantined":
             continue
         for tag in doc.get("tags", []):
+            code = tag["doctype_code"]
+            sha = doc.get("sha256") or doc["id"]
+            if sha in seen_content.setdefault(code, set()):
+                continue
+            seen_content[code].add(sha)
             label = tag.get("period_label") or doc.get("filename", "")
-            by_type.setdefault(tag["doctype_code"], []).append(
-                {"doc_id": doc["id"], "doctype_code": tag["doctype_code"],
-                 "label": f"{tag['doctype_code']}:{label}",
+            by_type.setdefault(code, []).append(
+                {"doc_id": doc["id"], "doctype_code": code,
+                 "label": f"{code}:{label}",
                  "seq": (tag.get("seq_order") or 0, label)})
     for docs in by_type.values():
         docs.sort(key=lambda d: d.pop("seq"))
@@ -171,6 +179,7 @@ def create_run(body: RunCreate, request: Request,
                detail={"template_key": body.template_key, "master_versions": master_versions,
                        "applied_preferences": prefs, "gaps": gaps,
                        "sections": [s["section_code"] for s in run_dict["sections"]]})
+    resolver.update_case_status(body.case_id, "generating")
     return run_dict
 
 
@@ -186,8 +195,9 @@ def _load_run(db, run_id: str, principal: Principal) -> Run:
 
 @app.get("/api/runs/usage/summary")
 def usage_summary(principal: Principal = Depends(require("audit:read"))):
-    if is_own_scoped(principal.roles):
-        raise ApiError.forbidden("usage summary is for admin/audit roles")
+    # BRD FR-F06: business admins and auditors only
+    if not (principal.can("masters:settings") or principal.can("audit:export")):
+        raise ApiError.forbidden("usage summary is for business-admin/auditor roles")
     with SessionLocal() as db:
         runs = db.scalar(select(func.count()).select_from(Run)) or 0
         jobs = list(db.scalars(select(SectionJob)).all())
@@ -256,6 +266,13 @@ def regenerate_section(run_id: str, section_code: str,
         run = _load_run(db, run_id, principal)
         if not run.cam_id:
             raise ApiError.conflict("run has no CAM yet; retry/complete the run first")
+        try:
+            if resolver.fetch_cam(run.cam_id).get("status") == "final":
+                raise ApiError.conflict("CAM is finalised; regeneration is closed")
+        except ApiError as exc:
+            if exc.code == "conflict":
+                raise
+            # CAM unreachable: fall through — the push itself is guarded too
         source = db.scalar(select(SectionJob).where(
             SectionJob.run_id == run_id, SectionJob.section_code == section_code,
             SectionJob.kind == "initial"))

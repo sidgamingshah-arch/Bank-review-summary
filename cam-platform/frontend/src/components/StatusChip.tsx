@@ -28,6 +28,7 @@ const TONE_BY_STATUS: Record<string, ChipTone> = {
   // cases / cams
   open: 'blue',
   generating: 'blue',
+  drafted: 'amber',
   finalised: 'green',
   final: 'green',
   // tag / version sources

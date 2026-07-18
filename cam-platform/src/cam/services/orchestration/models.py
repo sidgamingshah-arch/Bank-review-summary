@@ -61,6 +61,7 @@ class SectionJob(Base):
     skip_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     prompt_version: Mapped[int] = mapped_column(Integer, default=0)
     fixed_format: Mapped[bool] = mapped_column(Boolean, default=False)
     length_guidance: Mapped[str] = mapped_column(String(256), default="")
