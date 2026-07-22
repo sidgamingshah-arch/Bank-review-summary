@@ -133,12 +133,16 @@ def create_run(body: RunCreate, request: Request,
         "template": resolved["template_version"],
         "prompts": {s["section_code"]: s["prompt"]["version"] for s in resolved["sections"]},
         "global_rules": (resolved.get("global_rules") or {}).get("version"),
+        "agent_rules": {role: entry["version"]
+                        for role, entry in (resolved.get("agent_rules") or {}).items()},
         "doctypes": resolved.get("doctype_master_versions", {}),
         "kpi_set": kpi.get("kpi_set_version"),
     }
     resolution = {
         "template": resolved["template"], "sections": resolved["sections"],
         "global_rules": resolved.get("global_rules"),
+        "agent_rules": resolved.get("agent_rules", {}),
+        "settings": resolved.get("settings", {}),
         "kpis": kpi.get("kpis", []),
         "industry_name": (kpi.get("industry") or {}).get("industry_name", ""),
         "case": {"segment": case.get("segment", ""), "relationship": case.get("relationship", "")},

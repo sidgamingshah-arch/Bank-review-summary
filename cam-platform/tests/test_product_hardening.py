@@ -282,3 +282,61 @@ def test_cam_delivered_before_run_turns_terminal(wired, analyst_headers, monkeyp
         state = c.get(f"/api/runs/{run['id']}", headers=analyst_headers).json()
     assert observed["status_at_handoff"] == "running"
     assert state["status"] == "complete" and state["cam_id"] == "cam-atomic"
+
+
+# ----------------------------------------------------------- agentic pipeline
+
+def test_agentic_pipeline_order_checks_and_grounding(wired, analyst_headers):
+    from tests.test_orchestration import FAKE_FACTS
+
+    with TestClient(orch.app) as c:
+        run = _create_run(c, analyst_headers).json()
+        worker.drain()
+        state = c.get(f"/api/runs/{run['id']}", headers=analyst_headers).json()
+    fin = next(s for s in state["sections"] if s["section_code"] == "financial_analysis")
+
+    # canonical agent order, all recorded in the trace with token usage
+    assert [t["agent"] for t in fin["agent_trace"]] == [
+        "extraction", "summarisation", "materiality", "consistency"]
+    assert fin["checks"]["materiality"]["passed"] is True
+    assert fin["checks"]["consistency"]["passed"] is True
+    assert fin["facts_count"] == len(FAKE_FACTS)
+    assert fin["tokens_in"] == 140  # extraction 40 + summarisation 100
+
+    # the extraction agent's facts are the summariser's grounding
+    fin_gen = next(p for p in wired["genai"]
+                   if p["layers"]["section_prompt"].startswith("Analyse"))
+    assert fin_gen["extracted_facts"] == FAKE_FACTS
+
+    # the consistency agent sees other sections' figures (cross-section check)
+    cons_payloads = [p for agent, p in wired["agents"] if agent == "consistency"]
+    assert any("exec_summary" in (p.get("other_sections") or {}) for p in cons_payloads)
+
+
+def test_materiality_revision_loop_bounded_and_disclosed(wired, analyst_headers, monkeypatch):
+    monkeypatch.setattr(resolver, "genai_materiality",
+                        lambda payload: {"passed": False,
+                                         "omissions": ["Capacity utilisation"],
+                                         "flags": [], "notes": "material gap",
+                                         "model": "m", "usage": {}})
+    with TestClient(orch.app) as c:
+        run = _create_run(c, analyst_headers).json()
+        worker.drain()
+        state = c.get(f"/api/runs/{run['id']}", headers=analyst_headers).json()
+
+    fin = next(s for s in state["sections"] if s["section_code"] == "financial_analysis")
+    mat = fin["checks"]["materiality"]
+    assert mat["passed"] is False and mat["revisions"] == 1  # bounded by the limit
+    agents_seq = [t["agent"] for t in fin["agent_trace"]]
+    assert agents_seq.count("summarisation:revision") == 1
+    assert "materiality:recheck" in agents_seq
+
+    # the revision fed the omissions back to the summariser
+    revision_calls = [p for p in wired["genai"] if p.get("feedback")]
+    assert revision_calls
+    assert revision_calls[0]["feedback"]["omissions"] == ["Capacity utilisation"]
+
+    # unresolved omissions are disclosed in the gap trailer (FR-D05)
+    trailer = next(s for s in wired["cams"][0]["sections"] if s["section_code"] == "_gaps")
+    assert "Materiality-check agent" in trailer["content"]
+    assert "Capacity utilisation" in trailer["content"]

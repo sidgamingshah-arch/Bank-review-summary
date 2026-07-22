@@ -44,6 +44,16 @@ def clear_cache():
 def mocked_masters(monkeypatch):
     monkeypatch.setattr(tag_main, "fetch_published_doctypes", lambda: DOCTYPES)
     monkeypatch.setattr(tag_main, "fetch_threshold", lambda: 0.6)
+    # legacy two-pass semantics for the fallback tests below; ai_first (the
+    # platform default) has its own test block
+    monkeypatch.setattr(tag_main, "fetch_mode", lambda: "keyword_first")
+
+
+@pytest.fixture()
+def ai_first(monkeypatch):
+    monkeypatch.setattr(tag_main, "fetch_published_doctypes", lambda: DOCTYPES)
+    monkeypatch.setattr(tag_main, "fetch_threshold", lambda: 0.6)
+    monkeypatch.setattr(tag_main, "fetch_mode", lambda: "ai_first")
 
 
 # ---------------------------------------------------------------- scorer
@@ -137,7 +147,7 @@ def test_classify_endpoint_contract_shape(client, mocked_masters):
                        headers=SERVICE)
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert set(body) == {"candidates", "threshold", "best", "llm_consulted"}
+    assert set(body) == {"candidates", "threshold", "best", "llm_consulted", "mode"}
     assert body["threshold"] == 0.6
     # filename 'annual report' (3.0) + text 'balance sheet' (1.0)
     # + 'profit and loss' (1.0) = 5.0 -> 5/9 = 0.556 < 0.6 -> needs review
@@ -252,3 +262,55 @@ def test_llm_weaker_or_null_never_downgrades_keyword(client, mocked_masters, mon
                        json={"filename": "annual_report.pdf", "text": ""},
                        headers=SERVICE).json()
     assert body["best"]["doctype_code"] == "financials"
+
+
+# ------------------------------------------------------- ai_first (default mode)
+
+def test_ai_first_llm_is_primary_even_when_keyword_strong(client, ai_first, monkeypatch):
+    consulted = []
+    monkeypatch.setattr(tag_main, "llm_classify",
+                        lambda f, t, d: consulted.append(f) or
+                        {"code": "financials", "confidence": 0.91, "rationale": "clear"})
+    body = client.post("/api/tagging/classify",
+                       json={"filename": "annual_report.pdf",
+                             "text": "balance sheet profit and loss balance sheet"},
+                       headers=SERVICE).json()
+    assert consulted and body["mode"] == "ai_first" and body["llm_consulted"] is True
+    assert body["best"]["method"] == "llm" and body["best"]["confidence"] == 0.91
+    assert body["best"]["needs_review"] is False  # keyword agrees, above threshold
+
+
+def test_ai_first_disagreement_with_keyword_flags_review(client, ai_first, monkeypatch):
+    monkeypatch.setattr(tag_main, "llm_classify",
+                        lambda f, t, d: {"code": "kyc", "confidence": 0.9, "rationale": ""})
+    # keyword scorer clearly says financials; LLM says kyc -> review flag
+    body = client.post("/api/tagging/classify",
+                       json={"filename": "annual_report.pdf", "text": ""},
+                       headers=SERVICE).json()
+    assert body["best"]["doctype_code"] == "kyc" and body["best"]["method"] == "llm"
+    assert body["best"]["needs_review"] is True
+
+
+def test_ai_first_falls_back_to_keyword_when_llm_down(client, ai_first, monkeypatch):
+    monkeypatch.setattr(tag_main, "llm_classify", lambda f, t, d: None)
+    body = client.post("/api/tagging/classify",
+                       json={"filename": "annual_report.pdf", "text": ""},
+                       headers=SERVICE).json()
+    assert body["llm_consulted"] is False
+    assert body["best"]["doctype_code"] == "financials"
+    assert body["best"]["method"] == "keyword"
+
+
+def test_keyword_only_never_consults_llm(client, monkeypatch):
+    monkeypatch.setattr(tag_main, "fetch_published_doctypes", lambda: DOCTYPES)
+    monkeypatch.setattr(tag_main, "fetch_threshold", lambda: 0.6)
+    monkeypatch.setattr(tag_main, "fetch_mode", lambda: "keyword_only")
+
+    def boom(f, t, d):
+        raise AssertionError("keyword_only must never call the model")
+
+    monkeypatch.setattr(tag_main, "llm_classify", boom)
+    body = client.post("/api/tagging/classify",
+                       json={"filename": "unmatchable_scan.bin", "text": "no phrases here"},
+                       headers=SERVICE).json()
+    assert body["mode"] == "keyword_only" and body["best"] is None

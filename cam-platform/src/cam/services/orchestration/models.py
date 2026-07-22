@@ -67,6 +67,9 @@ class SectionJob(Base):
     length_guidance: Mapped[str] = mapped_column(String(256), default="")
     input_docs: Mapped[list] = mapped_column(JSON, default=list)  # [{doc_id, doctype_code, label}]
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    facts: Mapped[list] = mapped_column(JSON, default=list)        # extraction-agent output
+    checks: Mapped[dict] = mapped_column(JSON, default=dict)       # materiality/consistency verdicts
+    agent_trace: Mapped[list] = mapped_column(JSON, default=list)  # per-agent execution record
     tokens_in: Mapped[int] = mapped_column(Integer, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, default=0)
     untraceable: Mapped[list] = mapped_column(JSON, default=list)
@@ -80,5 +83,7 @@ class SectionJob(Base):
             "prompt_version": self.prompt_version, "fixed_format": self.fixed_format,
             "input_documents": self.input_docs, "tokens_in": self.tokens_in,
             "tokens_out": self.tokens_out, "untraceable": self.untraceable,
+            "facts_count": len(self.facts or []), "checks": self.checks or {},
+            "agent_trace": self.agent_trace or [],
             "updated_at": iso(self.updated_at),
         }

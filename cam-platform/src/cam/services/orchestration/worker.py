@@ -75,8 +75,34 @@ def build_gap_trailer(run: Run, sections: list[SectionJob]) -> str:
         lines = [f"- {name}: {', '.join(nums)}" for name, nums in flagged]
         parts.append("**Figures that could not be traced to a supplied source (verify "
                      "before finalising):**\n" + "\n".join(lines))
+
+    # agentic check outcomes that remained unresolved after bounded revision
+    mat_lines, cons_lines, unchecked = [], [], []
+    for s in sections:
+        checks = s.checks or {}
+        materiality = checks.get("materiality") or {}
+        consistency = checks.get("consistency") or {}
+        if materiality.get("passed") is False:
+            for omission in materiality.get("omissions", []):
+                mat_lines.append(f"- {s.name}: {omission}")
+        if consistency.get("passed") is False:
+            for issue in consistency.get("inconsistencies", []):
+                cons_lines.append(f"- {s.name}: {issue}")
+        for role in ("materiality", "consistency"):
+            if checks.get(role, {}).get("passed") is None and checks.get(role):
+                unchecked.append(f"- {s.name}: {role} check returned no usable verdict")
+    if mat_lines:
+        parts.append("**Materiality-check agent — unresolved material omissions:**\n"
+                     + "\n".join(mat_lines))
+    if cons_lines:
+        parts.append("**Consistency-check agent — unresolved inconsistencies:**\n"
+                     + "\n".join(cons_lines))
+    if unchecked:
+        parts.append("**Checks that could not be completed:**\n" + "\n".join(unchecked))
+
     if len(parts) == 1:
-        parts.append("No data gaps were identified for this generation.")
+        parts.append("No data gaps were identified for this generation. All sections "
+                     "passed the materiality and consistency check agents.")
     return "\n\n".join(parts)
 
 
@@ -186,6 +212,132 @@ def _section_payload(run: Run, job: SectionJob) -> dict:
     }
 
 
+_NUM_RE = None
+
+
+def _figures_from_facts(facts: list[dict]) -> list[str]:
+    global _NUM_RE
+    if _NUM_RE is None:
+        import re
+        _NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+    figures: set[str] = set()
+    for fact in facts or []:
+        for token in _NUM_RE.findall(f"{fact.get('value', '')} {fact.get('quote', '')}"):
+            figures.add(token.replace(",", ""))
+    return sorted(figures)
+
+
+def _other_sections_digest(run_id: str, exclude_code: str) -> dict[str, list[str]]:
+    """Key figures already used by the run's other completed sections — the
+    consistency agent's cross-section context."""
+    with SessionLocal() as db:
+        rows = db.scalars(select(SectionJob).where(
+            SectionJob.run_id == run_id, SectionJob.kind == "initial",
+            SectionJob.status == "complete",
+            SectionJob.section_code != exclude_code)).all()
+        return {row.section_code: _figures_from_facts(row.facts)[:8] for row in rows}
+
+
+def _run_agent_pipeline(run: Run, job: SectionJob) -> dict:
+    """Extraction → summarisation → materiality check → consistency check,
+    with bounded revision loops (FR-D04 + agentic BRD addendum). Every agent
+    call is recorded in the job's trace for the audit trail."""
+    base = _section_payload(run, job)
+    rules = {role: (entry or {}).get("prompt_text")
+             for role, entry in (run.resolution.get("agent_rules") or {}).items()}
+    pipeline_settings = run.resolution.get("settings") or {}
+    revision_limit = int(pipeline_settings.get("agent_revision_limit", 1))
+
+    trace: list[dict] = []
+    totals = {"in": 0, "out": 0}
+
+    def record(agent: str, resp: dict, **extra) -> None:
+        usage = resp.get("usage") or {}
+        tokens_in = int(usage.get("input_tokens", 0))
+        tokens_out = int(usage.get("output_tokens", 0))
+        totals["in"] += tokens_in
+        totals["out"] += tokens_out
+        trace.append({"agent": agent, "model": resp.get("model", ""),
+                      "tokens_in": tokens_in, "tokens_out": tokens_out, **extra})
+
+    # 1 — EXTRACTION AGENT (structured, source-attributed facts)
+    extraction = resolver.genai_extract({
+        "section_prompt": base["layers"]["section_prompt"],
+        "grounding_docs": base["grounding_docs"],
+        "placeholders": base["placeholders"],
+        "agent_rules": rules.get("extraction"),
+        "model_overrides": base.get("model_overrides")})
+    facts = extraction.get("facts", [])
+    record("extraction", extraction, facts=len(facts),
+           parse_ok=extraction.get("parse_ok", True))
+
+    # 2 — SUMMARISATION AGENT (drafts from the extracted facts)
+    gen_payload = {**base, "extracted_facts": facts,
+                   "agent_rules": rules.get("summarisation")}
+    generated = resolver.genai_generate(gen_payload)
+    content = generated.get("content", "")
+    record("summarisation", generated)
+
+    checks: dict[str, dict] = {}
+    kpi_block = base["placeholders"].get("industry_kpis", "")
+    context = " ".join(str(v) for v in base["placeholders"].values())
+
+    def revise(feedback: dict, trigger: str, revision_no: int) -> None:
+        nonlocal content, generated
+        generated = resolver.genai_generate({**gen_payload, "feedback": feedback})
+        content = generated.get("content", "")
+        record("summarisation:revision", generated, trigger=trigger, revision=revision_no)
+
+    # 3 — MATERIALITY CHECK AGENT (bounded revision loop)
+    if pipeline_settings.get("agents_materiality_enabled", True):
+        verdict = resolver.genai_materiality({
+            "draft": content, "facts": facts, "industry_kpis": kpi_block,
+            "section_prompt": base["layers"]["section_prompt"],
+            "agent_rules": rules.get("materiality")})
+        record("materiality", verdict, passed=verdict.get("passed"),
+               omissions=len(verdict.get("omissions") or []))
+        revisions = 0
+        while verdict.get("passed") is False and revisions < revision_limit:
+            revisions += 1
+            revise({"omissions": verdict.get("omissions", [])}, "materiality", revisions)
+            verdict = resolver.genai_materiality({
+                "draft": content, "facts": facts, "industry_kpis": kpi_block,
+                "section_prompt": base["layers"]["section_prompt"],
+                "agent_rules": rules.get("materiality")})
+            record("materiality:recheck", verdict, passed=verdict.get("passed"))
+        checks["materiality"] = {
+            "passed": verdict.get("passed"), "omissions": verdict.get("omissions", []),
+            "flags": verdict.get("flags", []), "notes": verdict.get("notes", ""),
+            "revisions": revisions}
+
+    # 4 — CONSISTENCY CHECK AGENT (facts + cross-section figures)
+    if pipeline_settings.get("agents_consistency_enabled", True):
+        digest = _other_sections_digest(run.id, job.section_code)
+        cons_payload = {"draft": content, "facts": facts,
+                        "context": f"{context} {kpi_block}",
+                        "other_sections": digest,
+                        "agent_rules": rules.get("consistency")}
+        verdict = resolver.genai_consistency(cons_payload)
+        record("consistency", verdict, passed=verdict.get("passed"),
+               inconsistencies=len(verdict.get("inconsistencies") or []))
+        revisions = 0
+        while verdict.get("passed") is False and revisions < revision_limit:
+            revisions += 1
+            revise({"inconsistencies": verdict.get("inconsistencies", [])},
+                   "consistency", revisions)
+            verdict = resolver.genai_consistency({**cons_payload, "draft": content})
+            record("consistency:recheck", verdict, passed=verdict.get("passed"))
+        checks["consistency"] = {
+            "passed": verdict.get("passed"),
+            "inconsistencies": verdict.get("inconsistencies", []),
+            "notes": verdict.get("notes", ""), "revisions": revisions}
+
+    return {"content": content, "facts": facts, "checks": checks, "trace": trace,
+            "tokens_in": totals["in"], "tokens_out": totals["out"],
+            "untraceable": generated.get("untraceable_numbers", []),
+            "model": generated.get("model", "unknown")}
+
+
 def process_job(job_id: str) -> None:
     with SessionLocal() as db:
         job = db.get(SectionJob, job_id)
@@ -193,26 +345,30 @@ def process_job(job_id: str) -> None:
     set_correlation_id(run.correlation_id)
 
     try:
-        payload = _section_payload(run, job)
-        result = resolver.genai_generate(payload)
+        result = _run_agent_pipeline(run, job)
         with SessionLocal() as db:
             job = db.get(SectionJob, job_id)
             job.status = "complete"
             job.error = None
-            job.content = result.get("content", "")
-            usage = result.get("usage", {})
-            job.tokens_in = int(usage.get("input_tokens", 0))
-            job.tokens_out = int(usage.get("output_tokens", 0))
-            job.untraceable = result.get("untraceable_numbers", [])
+            job.content = result["content"]
+            job.facts = result["facts"]
+            job.checks = result["checks"]
+            job.agent_trace = result["trace"]
+            job.tokens_in = result["tokens_in"]
+            job.tokens_out = result["tokens_out"]
+            job.untraceable = result["untraceable"]
             run = db.get(Run, job.run_id)
             if run.model_identity in ("", "pending"):
-                run.model_identity = result.get("model", "unknown")
+                run.model_identity = result["model"]
             db.commit()
         audit.emit(settings, action="run.section_completed", entity_type="run_section",
                    entity_id=f"{run.id}:{job.section_code}", case_id=run.case_id,
                    run_id=run.id, detail={"section": job.section_code, "kind": job.kind,
                                           "untraceable": job.untraceable,
-                                          "tokens_out": job.tokens_out})
+                                          "tokens_out": job.tokens_out,
+                                          "agents": [t["agent"] for t in job.agent_trace],
+                                          "checks": {k: v.get("passed")
+                                                     for k, v in job.checks.items()}})
     except Exception as exc:
         log.exception("section %s of run %s failed", job.section_code, job.run_id)
         with SessionLocal() as db:
@@ -336,7 +492,10 @@ def _maybe_finalize(run_id: str) -> None:
                            "gaps": run.gaps,
                            "input_documents": {s.section_code: s.input_docs for s in sections},
                            "untraceable": {s.section_code: s.untraceable
-                                           for s in sections if s.untraceable}})
+                                           for s in sections if s.untraceable},
+                           "agent_checks": {s.section_code: {k: v.get("passed")
+                                                             for k, v in (s.checks or {}).items()}
+                                            for s in sections if s.checks}})
 
 
 def process_next() -> bool:

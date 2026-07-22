@@ -242,6 +242,20 @@ def ac2_case_to_download(client: httpx.Client, samples: dict) -> tuple[dict, str
     assert case_state["status"] == "drafted", case_state["status"]
     ok("AC2", f"async generation complete: {len(statuses)} sections drafted, 1 conditional "
               f"section skipped, model={run['model_identity']}; case moved to 'drafted'")
+
+    # agentic pipeline: extraction → summarisation → materiality → consistency,
+    # with the materiality agent forcing a KPI-coverage revision on this section
+    fin = next(s for s in run["sections"] if s["section_code"] == "financial_analysis")
+    agents_seq = [t["agent"] for t in fin["agent_trace"]]
+    assert agents_seq[:2] == ["extraction", "summarisation"], agents_seq
+    assert fin["facts_count"] > 0
+    materiality = fin["checks"]["materiality"]
+    consistency = fin["checks"]["consistency"]
+    assert materiality["passed"] is True and consistency["passed"] is True, fin["checks"]
+    assert materiality["revisions"] >= 1  # KPI framework coverage forced one revision
+    ok("AC2", f"agentic pipeline ran {len(agents_seq)} agent steps: materiality passed "
+              f"after {materiality['revisions']} bounded revision, consistency passed, "
+              f"{fin['facts_count']} facts extracted")
     return case, run["id"], client.get(f"{GATEWAY}/api/cams/{run['cam_id']}",
                                        headers=analyst).json()
 
@@ -339,6 +353,13 @@ def ac4_lineage(client: httpx.Client, cam_id: str) -> None:
             "cam.finalised"} <= edit_actions
     ok("AC4", f"lineage: template/prompt/KPI versions + model + preferences + "
               f"{len(hashes)} document hashes + {len(lineage['edits'])} edit events")
+
+    tag_events = client.get(f"{GATEWAY}/api/audit/events?action=tag.auto_applied&limit=20",
+                            headers=auditor).json()["events"]
+    methods = {e["detail"].get("method") for e in tag_events}
+    assert methods == {"llm"}, methods
+    ok("AC4", f"document tagging audited as AI-based on all {len(tag_events)} auto-tags "
+              "(method=llm, ai_first mode)")
 
     chain = client.get(f"{GATEWAY}/api/audit/verify-chain", headers=auditor).json()
     assert chain["intact"] is True and chain["checked"] > 40

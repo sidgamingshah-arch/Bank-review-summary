@@ -6,9 +6,10 @@ runtime; every lifecycle step is audited (FR-F03).
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from fastapi import Depends, Query, Response, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from cam.common import audit
@@ -23,7 +24,7 @@ from cam.common.security import Principal, make_auth_dependencies
 from . import engine as eng
 from .csv_io import parse_kpi_csv, render_kpi_csv
 from .models import DEFAULT_SETTINGS, MTYPES, MasterItem, MasterVersion, Setting
-from .schemas import GLOBAL_PROMPT_KEY, validate_payload
+from .schemas import AGENT_RULE_KEYS, GLOBAL_PROMPT_KEY, validate_payload
 
 settings = get_settings("master-config")
 engine = make_engine(settings.resolved_db_url())
@@ -76,6 +77,10 @@ def get_settings_map(principal: Principal = Depends(require("masters:read"))):
 
 class SettingsPatch(BaseModel):
     tagging_confidence_threshold: float | None = None
+    tagging_mode: Literal["ai_first", "keyword_first", "keyword_only"] | None = None
+    agents_materiality_enabled: bool | None = None
+    agents_consistency_enabled: bool | None = None
+    agent_revision_limit: int | None = Field(default=None, ge=0, le=3)
 
 
 @app.put("/api/masters/settings")
@@ -135,6 +140,16 @@ def resolve_template(key: str, principal: Principal = Depends(require("masters:r
         global_item = eng.get_item(db, "prompt", GLOBAL_PROMPT_KEY)
         global_v = eng.published_version(db, global_item) if global_item else None
 
+        # published agent-role standing rules (optional — agents run with
+        # house defaults when a role has no published master entry)
+        agent_rules: dict[str, dict] = {}
+        for role, rule_key in AGENT_RULE_KEYS.items():
+            rule_item = eng.get_item(db, "prompt", rule_key)
+            rule_v = eng.published_version(db, rule_item) if rule_item else None
+            if rule_v:
+                agent_rules[role] = {"prompt_key": rule_key, "version": rule_v.version_no,
+                                     "prompt_text": rule_v.payload["prompt_text"]}
+
         doctype_versions: dict[str, int] = {}
         referenced = set(template_v.payload.get("required_doc_types", []))
         for s in sections:
@@ -154,6 +169,7 @@ def resolve_template(key: str, principal: Principal = Depends(require("masters:r
             "template": template_v.payload,
             "global_rules": ({"prompt_key": GLOBAL_PROMPT_KEY, "version": global_v.version_no,
                               "prompt_text": global_v.payload["prompt_text"]} if global_v else None),
+            "agent_rules": agent_rules,
             "sections": sections,
             "doctype_master_versions": doctype_versions,
             "settings": {**DEFAULT_SETTINGS, **stored},

@@ -105,6 +105,17 @@ KEY_FIELD = {"prompt": "section_code", "doctype": "code",
 
 GLOBAL_PROMPT_KEY = "global_standing_rules"
 
+# Agent-role standing rules are governed prompt-master entries too (scope
+# "global"): business admins tune the agents like any other prompt, under
+# maker-checker, and they travel in the export bundle.
+AGENT_RULE_KEYS = {
+    "extraction": "agent_extraction_rules",
+    "summarisation": "agent_summarisation_rules",
+    "materiality": "agent_materiality_rules",
+    "consistency": "agent_consistency_rules",
+}
+GLOBAL_PROMPT_KEYS = {GLOBAL_PROMPT_KEY, *AGENT_RULE_KEYS.values()}
+
 
 def validate_payload(mtype: str, key: str, payload: dict, *,
                      doctype_codes: set[str], prompt_keys: set[str],
@@ -128,10 +139,11 @@ def validate_payload(mtype: str, key: str, payload: dict, *,
         for code in parsed.source_doc_types:
             if code not in doctype_codes:
                 errors.append(f"source_doc_types: unknown document type '{code}'")
-        if parsed.scope == "global" and key != GLOBAL_PROMPT_KEY:
-            errors.append(f"global-scope prompts must use the key '{GLOBAL_PROMPT_KEY}'")
-        if parsed.scope == "section" and key == GLOBAL_PROMPT_KEY:
-            errors.append(f"'{GLOBAL_PROMPT_KEY}' is reserved for the global-scope prompt")
+        if parsed.scope == "global" and key not in GLOBAL_PROMPT_KEYS:
+            errors.append("global-scope prompts must use one of the reserved keys: "
+                          + ", ".join(sorted(GLOBAL_PROMPT_KEYS)))
+        if parsed.scope == "section" and key in GLOBAL_PROMPT_KEYS:
+            errors.append(f"'{key}' is reserved for a global-scope prompt")
 
     elif mtype == "template":
         errors += validate_placeholders(parsed.template_instructions, doctype_codes)

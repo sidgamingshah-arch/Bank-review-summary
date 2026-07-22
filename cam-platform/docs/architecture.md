@@ -74,15 +74,25 @@ Rules of the topology (NFR-04/NFR-10):
 3. **Queue** — one `SectionJob` row per template section (DB-backed queue,
    ADR-0004). Conditional sections without their trigger document are marked
    `skipped` with a reason.
-4. **Execute** — asyncio workers claim jobs; for each section they fetch ONLY
-   its mapped documents' text (FR-D03), render `{{placeholders}}` and the
-   section-scoped `{{industry_kpis}}` block (FR-A11), and call the GenAI
-   gateway with the three prompt layers (house rules → global standing rules →
-   template instructions → section prompt) and the style directives derived
-   from the preference profile (suppressed for fixed-format sections, FR-B04).
-5. **Check** — the GenAI gateway extracts numeric/date tokens from the draft
-   and flags anything untraceable to the grounding material (FR-D04). Flags
-   travel with the section into the run record and the trailer.
+4. **Execute — the agent pipeline (ADR-0006)** — asyncio workers claim jobs
+   and conduct four model agents per section through the GenAI gateway, each
+   governed by its own prompt-master rules entry:
+   * **Extraction agent** — structured, source-attributed facts from ONLY the
+     section's mapped documents (FR-D03);
+   * **Summarisation agent** — drafts from the extracted facts, with the three
+     prompt layers (house → global standing rules → template instructions →
+     section prompt), `{{placeholders}}`, the section-scoped
+     `{{industry_kpis}}` block (FR-A11) and the style directives from the
+     preference profile (suppressed for fixed-format sections, FR-B04);
+   * **Materiality check agent** — verdict on material coverage; a failing
+     verdict feeds a bounded revision loop back through the summariser;
+   * **Consistency check agent** — draft vs facts vs the other completed
+     sections' figures, same bounded revision semantics.
+   Every agent call is recorded in the section's `agent_trace`.
+5. **Check** — beyond the agents, the GenAI gateway's deterministic backstop
+   extracts numeric/date tokens from the final draft and flags anything
+   untraceable to the grounding material (FR-D04). Unresolved agent verdicts
+   and flags travel into the run record and the trailer.
 6. **Deliver** — when all sections are terminal, orchestration posts the CAM
    to the output service with a generated **data-gap trailer** (`_gaps`)
    disclosing missing documents, skipped/failed sections and flagged figures

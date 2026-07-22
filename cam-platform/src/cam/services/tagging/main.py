@@ -56,6 +56,24 @@ def fetch_threshold() -> float:
         return DEFAULT_THRESHOLD
 
 
+DEFAULT_MODE = "ai_first"
+VALID_MODES = {"ai_first", "keyword_first", "keyword_only"}
+
+
+def fetch_mode() -> str:
+    """tagging_mode from master settings (ai_first | keyword_first |
+    keyword_only), defaulting to AI-based classification (monkeypatched in
+    tests; fail-open to the default)."""
+    try:
+        with gateway_client(settings, timeout=15.0) as client:
+            resp = client.get("/api/masters/settings", headers=gateway_headers(settings))
+            raise_for_error(resp, "master settings lookup")
+            mode = resp.json().get("tagging_mode")
+            return mode if mode in VALID_MODES else DEFAULT_MODE
+    except Exception:
+        return DEFAULT_MODE
+
+
 def _cached(key: str, loader: Callable[[], Any]) -> Any:
     now = time.monotonic()
     hit = _cache.get(key)
@@ -99,23 +117,43 @@ def classify_document(body: ClassifyRequest,
         raise ApiError.forbidden("internal endpoint (service token or business_admin)")
     doctypes = _cached("doctypes", lambda: fetch_published_doctypes())
     threshold = float(_cached("threshold", lambda: fetch_threshold()))
+    mode = str(_cached("mode", lambda: fetch_mode()))
     result = classify(body.filename, body.text, doctypes, threshold)
     result["llm_consulted"] = False
+    result["mode"] = mode
+    keyword_best = result["best"]
 
-    # Name/keyword matching is the explainable first pass; when it finds
-    # nothing (or only a below-threshold guess), consult the LLM classifier.
-    best = result["best"]
-    if best is None or best["confidence"] < threshold:
+    def adopt_llm(llm: dict, *, corroborated: bool | None) -> None:
+        confidence = round(float(llm.get("confidence", 0.0)), 3)
+        needs_review = confidence < threshold or corroborated is False
+        result["best"] = {"doctype_code": llm["code"], "confidence": confidence,
+                          "needs_review": needs_review, "method": "llm",
+                          "rationale": llm.get("rationale", "")}
+        others = [c for c in result["candidates"] if c["doctype_code"] != llm["code"]]
+        result["candidates"] = [{"doctype_code": llm["code"],
+                                 "confidence": confidence}, *others][:5]
+
+    if mode == "ai_first":
+        # AI classification is primary; the keyword scorer corroborates.
+        # Disagreement between the two flags the tag for analyst review.
         llm = llm_classify(body.filename, body.text, doctypes)
         result["llm_consulted"] = llm is not None
         if llm and llm.get("code"):
-            confidence = round(float(llm.get("confidence", 0.0)), 3)
-            if best is None or confidence > best["confidence"]:
-                result["best"] = {"doctype_code": llm["code"], "confidence": confidence,
-                                  "needs_review": confidence < threshold,
-                                  "method": "llm", "rationale": llm.get("rationale", "")}
-                others = [c for c in result["candidates"]
-                          if c["doctype_code"] != llm["code"]]
-                result["candidates"] = [{"doctype_code": llm["code"],
-                                         "confidence": confidence}, *others][:5]
+            corroborated = (keyword_best is None or
+                            keyword_best["doctype_code"] == llm["code"]) or None
+            if keyword_best and keyword_best["doctype_code"] != llm["code"]:
+                corroborated = False
+            adopt_llm(llm, corroborated=corroborated)
+        # LLM unavailable or abstained -> the keyword result (possibly None)
+        # stands, exactly as in keyword mode
+    elif mode == "keyword_first":
+        # explainable first pass; LLM only when it finds nothing usable
+        if keyword_best is None or keyword_best["confidence"] < threshold:
+            llm = llm_classify(body.filename, body.text, doctypes)
+            result["llm_consulted"] = llm is not None
+            if llm and llm.get("code"):
+                confidence = round(float(llm.get("confidence", 0.0)), 3)
+                if keyword_best is None or confidence > keyword_best["confidence"]:
+                    adopt_llm(llm, corroborated=None)
+    # keyword_only: never consult the model
     return result

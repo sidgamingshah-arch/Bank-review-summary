@@ -63,7 +63,15 @@ class MockProvider:
 
         cap = _LENGTH_FACTS.get(prefs.get("length", "standard"), 6)
         facts: list[tuple[str, str]] = []
+        extracted = request.get("extracted_facts") or []
+        if extracted:
+            # agentic pipeline: the extraction agent's facts are the grounding
+            for fact in extracted[:cap]:
+                quote = str(fact.get("quote", "")).rstrip(".") + "."
+                facts.append((str(fact.get("source", "source")), quote))
         for doc in docs:
+            if extracted:
+                break
             for fact in _fact_sentences(doc.get("text", ""), max(2, cap // max(len(docs), 1) + 1)):
                 if len(facts) < cap:
                     facts.append((doc.get("label") or doc.get("doctype_code", "source"), fact))
@@ -98,6 +106,18 @@ class MockProvider:
         if request.get("layers", {}).get("section_prompt", "").find("KPI") >= 0 or kpis:
             if kpis and not kpis.startswith("("):
                 parts.append(f"**Industry KPI framework applied:** {kpis.splitlines()[0]}")
+
+        feedback = request.get("feedback") or {}
+        coverage = []
+        for omission in feedback.get("omissions") or []:
+            coverage.append(f"- {omission}: not evidenced in the supplied sources "
+                            "[data gap: input required]")
+        if coverage:
+            parts.append("**Materiality coverage (per check agent):**\n" + "\n".join(coverage))
+        if feedback.get("inconsistencies"):
+            # facts-only recomposition above already realigns the figures
+            parts.append("*Figures realigned to the extracted fact base per the "
+                         "consistency check.*")
 
         if request.get("fixed_format"):
             parts.append("*Prepared in the bank's prescribed fixed format for this section.*")
@@ -176,6 +196,31 @@ class MockProvider:
         return GenResult(content=json.dumps(payload), model=self.model,
                          usage=_estimate_usage(system, user, json.dumps(payload)))
 
+    # agentic pipeline roles — deterministic mirrors of the model behaviour
+    def extract(self, request: dict, system: str, user: str) -> GenResult:
+        import json
+
+        from . import agents
+        content = json.dumps(agents.mock_extract(request))
+        return GenResult(content=content, model=self.model,
+                         usage=_estimate_usage(system, user, content))
+
+    def materiality(self, request: dict, system: str, user: str) -> GenResult:
+        import json
+
+        from . import agents
+        content = json.dumps(agents.mock_materiality(request))
+        return GenResult(content=content, model=self.model,
+                         usage=_estimate_usage(system, user, content))
+
+    def consistency(self, request: dict, system: str, user: str) -> GenResult:
+        import json
+
+        from . import agents
+        content = json.dumps(agents.mock_consistency(request))
+        return GenResult(content=content, model=self.model,
+                         usage=_estimate_usage(system, user, content))
+
 
 # ----------------------------------------------------------------- anthropic
 
@@ -232,6 +277,15 @@ class AnthropicProvider:
         return result
 
     def classify(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
+
+    def extract(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
+
+    def materiality(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
+
+    def consistency(self, request: dict, system: str, user: str) -> GenResult:
         return self._call(request, system, user)
 
 

@@ -142,6 +142,23 @@ export function RunPage() {
                         ⚠ {s.untraceable.length} untraceable
                       </span>
                     ) : null}
+                    {Object.entries(s.checks ?? {}).map(([agent, check]) => (
+                      <span
+                        key={agent}
+                        className={`chip ${
+                          check.passed === true ? 'chip-green' : check.passed === false ? 'chip-red' : 'chip-gray'
+                        }`}
+                        title={[
+                          `${agent} check agent — ${
+                            check.passed === true ? 'passed' : check.passed === false ? 'FAILED' : 'no verdict'
+                          }${check.revisions ? ` after ${check.revisions} revision(s)` : ''}`,
+                          ...(check.omissions ?? []),
+                          ...(check.inconsistencies ?? []),
+                        ].join('\n')}
+                      >
+                        {check.passed === true ? '✓' : check.passed === false ? '✗' : '·'} {agent}
+                      </span>
+                    ))}
                   </td>
                   <td>
                     {s.status === 'failed' ? (

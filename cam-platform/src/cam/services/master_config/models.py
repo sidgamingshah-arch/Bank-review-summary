@@ -75,4 +75,12 @@ class Setting(Base):
 
 DEFAULT_SETTINGS: dict[str, object] = {
     "tagging_confidence_threshold": 0.55,
+    # ai_first: LLM classifies, keyword scorer corroborates (disagreement flags
+    # review). keyword_first: LLM only when keyword matching is weak/absent.
+    # keyword_only: never call the model.
+    "tagging_mode": "ai_first",
+    # agentic generation pipeline (extraction/summarisation always run)
+    "agents_materiality_enabled": True,
+    "agents_consistency_enabled": True,
+    "agent_revision_limit": 1,
 }

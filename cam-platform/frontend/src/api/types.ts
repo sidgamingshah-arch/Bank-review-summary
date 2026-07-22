@@ -245,6 +245,24 @@ export interface Completeness {
 export type RunStatus = 'queued' | 'running' | 'complete' | 'partial' | 'failed';
 export type RunSectionStatus = 'queued' | 'running' | 'complete' | 'failed' | 'skipped';
 
+export interface AgentCheck {
+  passed: boolean | null;
+  omissions?: string[];
+  inconsistencies?: string[];
+  flags?: string[];
+  notes?: string;
+  revisions?: number;
+}
+
+export interface AgentTraceStep {
+  agent: string;
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
+  passed?: boolean | null;
+  revision?: number;
+}
+
 export interface RunSection {
   section_code: string;
   name: string;
@@ -255,6 +273,9 @@ export interface RunSection {
   tokens_in: number;
   tokens_out: number;
   untraceable: string[];
+  facts_count?: number;
+  checks?: Record<string, AgentCheck>;
+  agent_trace?: AgentTraceStep[];
 }
 
 export interface RunGap {

@@ -95,6 +95,24 @@ GLOBAL_RULES = {
                     "crore as reported in sources; disclose every assumption explicitly."),
 }
 
+# Governed standing rules for the pipeline agents (tunable like any prompt,
+# maker-checker controlled, carried by the export bundle).
+AGENT_RULES = {
+    "agent_extraction_rules":
+        "Prefer audited figures over provisional ones when both exist; capture the "
+        "financial year or period with every figure; never compute derived ratios.",
+    "agent_summarisation_rules":
+        "Every paragraph must be attributable to the extracted facts; keep covenant "
+        "language verbatim from the sanction documents.",
+    "agent_materiality_rules":
+        "Treat as material: any exposure above INR 100 crore, any covenant with "
+        "headroom under 10%, every KPI in the industry framework, and any "
+        "year-on-year deterioration above 20%.",
+    "agent_consistency_rules":
+        "Figures must match the extracted facts exactly (no rounding drift); flag any "
+        "statement that contradicts another section's figures for the same item.",
+}
+
 SECTION_PROMPTS = [
     ("exec_summary", "Executive Summary & Recommendation",
      "Draft the executive summary for {{borrower_name}} ({{industry_name}}, {{case_type}}, "
@@ -183,6 +201,12 @@ def seed(client: httpx.Client) -> dict:
 
     versions["prompt:global"] = publish(client, admin1, admin2, "prompts",
                                         "global_standing_rules", GLOBAL_RULES)
+    for rule_key, rule_text in AGENT_RULES.items():
+        versions[f"prompt:{rule_key}"] = publish(client, admin1, admin2, "prompts", rule_key, {
+            "section_code": rule_key,
+            "section_name": rule_key.replace("_", " ").title(),
+            "scope": "global", "source_doc_types": [], "uses_industry_kpis": False,
+            "prompt_text": rule_text})
     for code, name, text, sources, uses_kpis, _fixed in [*SECTION_PROMPTS, PROJECT_PROMPT]:
         versions[f"prompt:{code}"] = publish(client, admin1, admin2, "prompts", code, {
             "section_code": code, "section_name": name, "scope": "section",

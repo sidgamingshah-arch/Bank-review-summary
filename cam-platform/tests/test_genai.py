@@ -158,3 +158,61 @@ def test_edit_endpoint_mock(service_headers):
             headers=service_headers)
         assert "74%" in r.json()["proposed_content"]
         assert current in r.json()["proposed_content"]  # supplement, not replacement
+
+
+AGENT_DOCS = [{"doctype_code": "audited_financials", "label": "FY2025 audited",
+               "text": FINANCIALS}]
+
+
+def test_extraction_agent_endpoint(service_headers):
+    with TestClient(genai.app) as c:
+        r = c.post("/api/genai/extract", json={
+            "section_prompt": "Analyse financial performance.",
+            "grounding_docs": AGENT_DOCS}, headers=service_headers)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["parse_ok"] is True and body["facts"]
+        fact = body["facts"][0]
+        assert fact["source"] == "FY2025 audited" and fact["quote"]
+        assert c.post("/api/genai/extract", json={"section_prompt": "x"},
+                      headers=make_user_headers("analyst1", ["analyst"])).status_code == 403
+
+
+def test_materiality_agent_endpoint(service_headers):
+    kpis = ("- EBITDA per tonne (INR/t, higher is better; benchmark 4500) — profit/t\n"
+            "- Capacity utilisation (%, higher is better; benchmark 80) — usage")
+    with TestClient(genai.app) as c:
+        r = c.post("/api/genai/materiality", json={
+            "draft": "Covers EBITDA per tonne only. Revenue Rs. 4,210 Cr.",
+            "facts": [{"quote": "Revenue Rs. 4,210 Cr"}],
+            "industry_kpis": kpis, "section_prompt": "x"}, headers=service_headers)
+        body = r.json()
+        assert body["passed"] is False and body["omissions"] == ["Capacity utilisation"]
+
+        r = c.post("/api/genai/materiality", json={
+            "draft": "Covers EBITDA per tonne and Capacity utilisation.",
+            "facts": [{"quote": "some fact 1"}], "industry_kpis": kpis,
+            "section_prompt": "x"}, headers=service_headers)
+        assert r.json()["passed"] is True
+
+        # no facts at all is itself a material omission
+        r = c.post("/api/genai/materiality", json={
+            "draft": "anything", "facts": [], "industry_kpis": "",
+            "section_prompt": "x"}, headers=service_headers)
+        assert r.json()["passed"] is False
+        assert "no quantitative facts" in r.json()["omissions"][0]
+
+
+def test_consistency_agent_endpoint(service_headers):
+    facts = [{"value": "4210", "quote": "Revenue Rs. 4,210 Cr in FY2025"}]
+    with TestClient(genai.app) as c:
+        r = c.post("/api/genai/consistency", json={
+            "draft": "Revenue was Rs. 4,210 Cr; margin of 99.9% was reported.",
+            "facts": facts, "context": ""}, headers=service_headers)
+        body = r.json()
+        assert body["passed"] is False and "99.9" in body["inconsistencies"][0]
+
+        r = c.post("/api/genai/consistency", json={
+            "draft": "Revenue was Rs. 4,210 Cr in FY2025.",
+            "facts": facts, "context": ""}, headers=service_headers)
+        assert r.json()["passed"] is True

@@ -64,7 +64,7 @@ narrowing) · **▷ Deferred** (v1 scope decision, integration point in place).
 | FR-C01 | M | ✔ | drag-drop multi-file with per-file progress (SPA) | FE build |
 | FR-C02 | M | ✔ | strictly one file per backend request; VAF validate→scan→quarantine with visible reason | tests/test_document_service.py, e2e AC-2 |
 | FR-C03 | M | ✔ | repository pull through the same pipeline (`/cases/{id}/pull`); fixture-backed stand-in for the enterprise repository API | e2e AC-2 |
-| FR-C04 | M | ✔ | two-pass: explainable keyword/synonym scorer, then LLM classification via the GenAI gateway when the name match reveals nothing or only a below-threshold guess (fail-open; method recorded on the tag audit) | tests/test_tagging_service.py, tests/test_genai.py |
+| FR-C04 | M | ✔ | AI-based classification (`tagging_mode: ai_first` default): LLM primary via the GenAI gateway, keyword scorer corroborates (disagreement ⇒ review flag) and stands in when the model is unavailable; `keyword_first`/`keyword_only` modes for cost-constrained deployments; method recorded on the tag audit | tests/test_tagging_service.py, tests/test_genai.py, e2e AC-4 |
 | FR-C05 | M | ✔ | many docs per type with period labels + ordering, used in grounding labels | e2e |
 | FR-C06 | M | ✔ | tag view/add/change/confirm/remove, all audited (`tag.*`) | tests, e2e |
 | FR-C07 | S | ✔ | sha256 duplicate detection — warn and proceed (`duplicate_of`) | tests/test_document_service.py |
@@ -76,10 +76,10 @@ narrowing) · **▷ Deferred** (v1 scope decision, integration point in place).
 
 | ID | Pri | Status | Implementation / notes | Verified |
 |---|---|---|---|---|
-| FR-D01 | M | ✔ | resolve → snapshot → async job per section | tests, e2e |
+| FR-D01 | M | ✔ | resolve → snapshot → async job per section, each running the four-agent pipeline: extraction → summarisation → materiality check → consistency check with bounded revision loops, per-agent trace and disclosed verdicts (ADR-0006) | tests/test_product_hardening.py, e2e |
 | FR-D02 | M | ✔ | per-section queued/running/complete/failed/skipped + individual retry | tests/test_orchestration.py |
 | FR-D03 | M | ✔ | grounding strictly from the section's mapped doc types | tests/test_orchestration.py |
-| FR-D04 | M | ✔ | standing no-fabrication rules + deterministic numeric/date trace check; untraceable figures flagged, never dropped silently. Heuristic scope (numbers/dates; names not machine-checked) documented in ADR-0005 | tests/test_genai.py |
+| FR-D04 | M | ✔ | layered enforcement: standing no-fabrication rules → extraction-agent facts as the summariser's grounding → materiality + consistency check agents with bounded revisions → deterministic numeric/date trace backstop; unresolved verdicts disclosed in the trailer (ADR-0005/0006) | tests/test_genai.py, tests/test_product_hardening.py, e2e |
 | FR-D05 | M | ✔ | `_gaps` trailer: missing docs, skipped/failed sections, flagged figures | e2e AC-2/AC-3 |
 | FR-D06 | S | ✔ | regenerate → new version of that section only (source `regeneration`) | tests/test_orchestration.py |
 | FR-D07 | C | ✔ | per-user active-run cap (429) + configurable worker concurrency | tests/test_orchestration.py |

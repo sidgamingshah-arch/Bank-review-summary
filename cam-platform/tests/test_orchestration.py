@@ -66,12 +66,18 @@ PREFS = {"tonality": "crisp", "structure_bias": "paragraphs", "table_usage": "au
          "length": "standard", "scope": "user"}
 
 
+FAKE_FACTS = [{"item": "Revenue FY2025", "value": "4210", "unit": "Cr",
+               "source": "audited_financials:FY2025",
+               "quote": "Revenue FY2025 Rs. 4,210 Cr, up 12.5%."}]
+
+
 @pytest.fixture
 def wired(monkeypatch):
     """Wire every cross-service call to in-memory fakes and capture outputs."""
     created_cams: list[dict] = []
     pushed_versions: list[tuple] = []
     genai_calls: list[dict] = []
+    agent_calls: list[tuple] = []
 
     def fake_genai(payload):
         genai_calls.append(payload)
@@ -79,6 +85,25 @@ def wired(monkeypatch):
                 "model": "mock-cam-composer-v1",
                 "usage": {"input_tokens": 100, "output_tokens": 50},
                 "untraceable_numbers": []}
+
+    def fake_extract(payload):
+        agent_calls.append(("extraction", payload))
+        return {"facts": FAKE_FACTS, "parse_ok": True, "model": "mock-cam-composer-v1",
+                "usage": {"input_tokens": 40, "output_tokens": 20}}
+
+    def fake_materiality(payload):
+        agent_calls.append(("materiality", payload))
+        return {"passed": True, "omissions": [], "flags": [], "notes": "covered",
+                "model": "mock-cam-composer-v1", "usage": {}}
+
+    def fake_consistency(payload):
+        agent_calls.append(("consistency", payload))
+        return {"passed": True, "inconsistencies": [], "notes": "aligned",
+                "model": "mock-cam-composer-v1", "usage": {}}
+
+    monkeypatch.setattr(resolver, "genai_extract", fake_extract)
+    monkeypatch.setattr(resolver, "genai_materiality", fake_materiality)
+    monkeypatch.setattr(resolver, "genai_consistency", fake_consistency)
 
     def fake_create_cam(payload):
         cam = {"id": "cam-1", **payload,
@@ -97,7 +122,8 @@ def wired(monkeypatch):
     monkeypatch.setattr(resolver, "fetch_cam", lambda cid: created_cams[-1])
     monkeypatch.setattr(resolver, "push_section_version",
                         lambda cam_id, sid, content: pushed_versions.append((cam_id, sid, content)))
-    return {"cams": created_cams, "pushed": pushed_versions, "genai": genai_calls}
+    return {"cams": created_cams, "pushed": pushed_versions, "genai": genai_calls,
+            "agents": agent_calls}
 
 
 def _create_run(c, headers, **kwargs):
@@ -115,7 +141,7 @@ def test_run_end_to_end(wired, analyst_headers, captured_audit):
         assert run["master_versions"] == {
             "template": 3, "prompts": {"exec_summary": 4, "financial_analysis": 7,
                                        "project_review": 1},
-            "global_rules": 2,
+            "global_rules": 2, "agent_rules": {},
             "doctypes": {"audited_financials": 2, "sanction_letter": 1, "project_report": 1},
             "kpi_set": 5}
         assert run["applied_preferences"]["source"] == "user"

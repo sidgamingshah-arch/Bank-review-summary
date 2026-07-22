@@ -112,7 +112,9 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
   DRAFTS in dependency order (doctypes → industries → prompts → KPI sets → templates),
   skipping entries identical to the published payload; maker-checker still governs
   publication. CLI: `scripts/masters_bundle.py export|import bundle.json`.
-- `GET /api/masters/settings` → `{tagging_confidence_threshold: float, ...}` · `PUT /api/masters/settings` (business_admin)
+- `GET /api/masters/settings` → `{tagging_confidence_threshold, tagging_mode,
+  agents_materiality_enabled, agents_consistency_enabled, agent_revision_limit}` ·
+  `PUT /api/masters/settings` (business_admin)
 - `GET /api/masters/published/doctypes` → `[doctype payload]` (all currently-published doc types;
   used by tagging/document services — avoids N+1 version lookups)
 
@@ -210,14 +212,20 @@ Accepted formats v1: `.pdf .docx .xlsx .csv .txt` · max 25 MB (or doctype `file
 ## 4. tagging (`/api/tagging`) — internal (service tokens; admins may call for testing)
 
 - `POST /api/tagging/classify` `{filename, text}` →
-  `{candidates: [{doctype_code, confidence: 0..1}], threshold, llm_consulted: bool,
+  `{candidates: [{doctype_code, confidence: 0..1}], threshold, llm_consulted: bool, mode,
     best: {doctype_code, confidence, needs_review, method: "keyword"|"llm", rationale?}}`
-  Two-pass classification: (1) explainable name/synonym/keyword scoring vs filename
-  (strong) + extracted text (weaker), normalised 0..1; (2) when pass 1 finds nothing or
-  only a below-threshold guess, an LLM fallback via `POST /api/genai/classify`
-  `{filename, text, doctypes}` → `{code|null, confidence, rationale, model, usage}`
-  (model must pick from the catalogue or null; fail-open — intake never blocks on it).
-  `needs_review = confidence < threshold` (threshold from master settings).
+  Classification is AI-based, governed by master setting `tagging_mode`:
+  * `ai_first` (default) — LLM classification via `POST /api/genai/classify`
+    `{filename, text, doctypes}` → `{code|null, confidence, rationale, model, usage}` is
+    PRIMARY; the keyword scorer corroborates (LLM/keyword disagreement ⇒
+    `needs_review: true`). LLM unavailable or abstaining ⇒ keyword result stands.
+  * `keyword_first` — explainable scorer first; LLM consulted only when it finds nothing
+    or only a below-threshold guess.
+  * `keyword_only` — the model is never consulted.
+  The model must pick from the catalogue or abstain (invented codes ⇒ null); all LLM
+  calls are fail-open — intake never blocks on them. `needs_review` additionally follows
+  `confidence < threshold`. The applied method is recorded on the `tag.auto_applied`
+  audit event.
 
 ---
 
@@ -240,7 +248,11 @@ Run = {id, case_id, template_key, status: "queued"|"running"|"complete"|"partial
                          doctypes: {code:int}, global_rules: int|null},
        model_identity: str, gaps: [{doctype_code, reason}],
        sections: [{section_code, name, order, status: "queued"|"running"|"complete"|"failed"|"skipped",
-                   attempts, error: str|null, tokens_in, tokens_out, untraceable: [str]}]}
+                   attempts, error: str|null, tokens_in, tokens_out, untraceable: [str],
+                   facts_count: int,
+                   checks: {materiality?: {passed, omissions, flags, notes, revisions},
+                            consistency?: {passed, inconsistencies, notes, revisions}},
+                   agent_trace: [{agent, model, tokens_in, tokens_out, ...}]}]}
 ```
 
 Worker: DB-backed queue (`SectionJob` rows, `SELECT ... FOR UPDATE SKIP LOCKED` semantics),
@@ -254,7 +266,25 @@ untraceable figures (FR-D05); then set `run.cam_id`.
 
 ## 6. genai-gateway (`/api/genai`) — service tokens ONLY (NFR-10)
 
-- `POST /api/genai/generate`
+The agentic pipeline's model roles. Orchestration conducts them per section:
+**extract → generate (summarise) → materiality → consistency**, with bounded
+revision loops (see §5 and ADR-0006). Each role's system prompt extends with the
+governed prompt-master entry for that role when published (reserved global keys
+`agent_extraction_rules`, `agent_summarisation_rules`, `agent_materiality_rules`,
+`agent_consistency_rules`).
+
+- `POST /api/genai/extract` `{section_prompt, grounding_docs, placeholders?,
+  agent_rules?, model_overrides?}` → `{facts: [{item, value, unit, source, quote}],
+  parse_ok, model, usage}` — EXTRACTION AGENT: literal, source-attributed facts only.
+- `POST /api/genai/materiality` `{draft, facts, industry_kpis, section_prompt,
+  agent_rules?}` → `{passed: bool|null, omissions: [], flags: [], notes, model, usage}`
+  — MATERIALITY CHECK AGENT (`passed: null` = unusable model reply; never invented).
+- `POST /api/genai/consistency` `{draft, facts, context, other_sections: {code:
+  [figures]}, agent_rules?}` → `{passed: bool|null, inconsistencies: [], notes, model,
+  usage}` — CONSISTENCY CHECK AGENT (facts + cross-section figures).
+- `POST /api/genai/generate` — SUMMARISATION AGENT; body additionally accepts
+  `extracted_facts` (primary grounding), `feedback: {omissions?, inconsistencies?}`
+  (revision loop input) and `agent_rules`.
   ```
   {mode: "section",
    layers: {global_rules: str|null, template_instructions: str|null, section_prompt: str},

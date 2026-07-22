@@ -1,11 +1,15 @@
 # CAM Platform — AI-Assisted Credit Assessment Memo Generation
 
-Configurable, AI-driven platform that turns borrower documents into
-first-draft Credit Assessment Memos: business-administered masters (prompts,
-industry KPIs, templates, document types) under maker-checker control drive
-section-by-section generation; analysts review, edit, converse with the AI
-(human-in-the-loop tracked suggestions) and finalise to DOCX/PDF — with a
-tamper-evident audit trail reconstructing every CAM's full lineage.
+Configurable, **agentic** AI platform that turns borrower documents into
+first-draft Credit Assessment Memos. Every section runs a governed multi-agent
+pipeline — **extraction → summarisation → materiality check → consistency
+check**, with bounded revision loops and a per-agent audit trace — and
+document tagging is AI-based (LLM classification primary, keyword scoring as
+corroboration). Business-administered masters (prompts, agent rules, industry
+KPIs, templates, document types) under maker-checker control drive it all;
+analysts review, edit, converse with the AI (human-in-the-loop tracked
+suggestions) and finalise to DOCX/PDF — with a tamper-evident audit trail
+reconstructing every CAM's full lineage.
 
 Built against the v0.1 BRD. Requirement-by-requirement status:
 **[docs/traceability.md](docs/traceability.md)** · architecture:

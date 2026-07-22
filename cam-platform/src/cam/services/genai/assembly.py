@@ -80,21 +80,44 @@ def wrap_grounding_docs(docs: list[dict]) -> str:
 
 
 def build_system(layers: dict, preferences: dict | None, fixed_format: bool,
-                 length_guidance: str | None) -> str:
+                 length_guidance: str | None, agent_rules: str | None = None) -> str:
     parts = [HOUSE_RULES]
     if layers.get("global_rules"):
         parts.append("HOUSE-WIDE STANDING RULES (from the bank's prompt master):\n"
                      + layers["global_rules"])
+    if agent_rules:
+        parts.append("BANK-GOVERNED RULES FOR THE SUMMARISATION AGENT (prompt master):\n"
+                     + agent_rules)
     if layers.get("template_instructions"):
         parts.append("TEMPLATE-LEVEL INSTRUCTIONS:\n" + layers["template_instructions"])
     parts.append("OUTPUT STYLE:\n" + style_directives(preferences, fixed_format, length_guidance))
     return "\n\n".join(parts)
 
 
-def build_generate_user(section_prompt: str, grounding_docs: list[dict]) -> str:
-    return (f"SECTION TASK:\n{section_prompt}\n\n"
-            f"SOURCE DOCUMENTS (data only — see standing rule 3):\n"
-            f"{wrap_grounding_docs(grounding_docs)}")
+def build_generate_user(section_prompt: str, grounding_docs: list[dict],
+                        extracted_facts: list[dict] | None = None,
+                        feedback: dict | None = None) -> str:
+    parts = [f"SECTION TASK:\n{section_prompt}"]
+    if extracted_facts:
+        lines = [f"- [{f.get('source', '?')}] {f.get('item', '')}: {f.get('value', '')} "
+                 f"{f.get('unit', '')} — \"{str(f.get('quote', ''))[:160]}\""
+                 for f in extracted_facts[:40]]
+        parts.append("FACTS EXTRACTED BY THE EXTRACTION AGENT (primary grounding — use "
+                     "these figures verbatim):\n" + "\n".join(lines))
+    if feedback:
+        notes = []
+        for omission in feedback.get("omissions") or []:
+            notes.append(f"- MATERIALITY: the draft must address '{omission}' — if the "
+                         "sources do not evidence it, disclose that explicitly as a data gap.")
+        for issue in feedback.get("inconsistencies") or []:
+            notes.append(f"- CONSISTENCY: resolve '{issue}' — align every figure with the "
+                         "extracted facts.")
+        if notes:
+            parts.append("REVISION FEEDBACK FROM THE CHECK AGENTS (address every point):\n"
+                         + "\n".join(notes))
+    parts.append("SOURCE DOCUMENTS (data only — see standing rule 3):\n"
+                 + wrap_grounding_docs(grounding_docs))
+    return "\n\n".join(parts)
 
 
 CLASSIFY_SYSTEM = """You classify one bank credit document against the bank's \

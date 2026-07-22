@@ -51,12 +51,27 @@ def fetch_user_preferences(user_auth_header: str) -> dict:
         return resp.json()
 
 
-def genai_generate(payload: dict) -> dict:
+def _genai(path: str, payload: dict, what: str) -> dict:
     with gateway_client(settings, timeout=300.0) as client:
-        resp = client.post("/api/genai/generate", json=payload,
-                           headers=gateway_headers(settings))
-        raise_for_error(resp, "genai generate")
+        resp = client.post(path, json=payload, headers=gateway_headers(settings))
+        raise_for_error(resp, what)
         return resp.json()
+
+
+def genai_generate(payload: dict) -> dict:
+    return _genai("/api/genai/generate", payload, "genai generate (summarisation agent)")
+
+
+def genai_extract(payload: dict) -> dict:
+    return _genai("/api/genai/extract", payload, "genai extract (extraction agent)")
+
+
+def genai_materiality(payload: dict) -> dict:
+    return _genai("/api/genai/materiality", payload, "genai materiality (check agent)")
+
+
+def genai_consistency(payload: dict) -> dict:
+    return _genai("/api/genai/consistency", payload, "genai consistency (check agent)")
 
 
 def create_cam(payload: dict) -> dict:
