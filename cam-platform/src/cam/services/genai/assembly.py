@@ -72,8 +72,11 @@ def wrap_grounding_docs(docs: list[dict]) -> str:
         return "<no source documents supplied for this section>"
     blocks = []
     for doc in docs:
-        code = str(doc.get("doctype_code", "unknown")).replace('"', "")
-        label = str(doc.get("label", code)).replace('"', "")
+        # doctype_code and label can be attacker-influenced (e.g. an external
+        # connector's source/date), so neutralise fence break-out on them too —
+        # not just the body (NFR-09).
+        code = sanitize_doc_text(str(doc.get("doctype_code", "unknown"))).replace('"', "")
+        label = sanitize_doc_text(str(doc.get("label", code))).replace('"', "")
         blocks.append(f'<document doctype="{code}" label="{label}">\n'
                       f'{sanitize_doc_text(doc.get("text", ""))}\n</document>')
     return "\n\n".join(blocks)

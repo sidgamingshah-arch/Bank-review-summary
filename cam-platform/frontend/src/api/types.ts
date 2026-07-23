@@ -96,6 +96,7 @@ export interface PromptPayload {
   prompt_text: string;
   source_doc_types: string[];
   uses_industry_kpis: boolean;
+  uses_external_context?: boolean;
   rendering_hints?: string;
   model_overrides?: ModelOverrides;
 }

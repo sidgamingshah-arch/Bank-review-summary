@@ -141,3 +141,11 @@ def test_content_filter_is_refusal(monkeypatch):
 def test_no_key_means_no_auth_header(monkeypatch):
     prov = _provider_with(monkeypatch, lambda r: _ok("ok"), key=None)
     assert "authorization" not in {k.lower() for k in prov.client.headers.keys()}
+
+
+def test_non_object_json_body_maps_to_502(monkeypatch):
+    # a 200 whose body is a JSON array/scalar must become a clean 502, not a 500
+    prov = _provider_with(monkeypatch, lambda r: httpx.Response(200, json=["not", "an", "object"]))
+    with pytest.raises(ApiError) as ei:
+        prov.generate({}, "s", "u")
+    assert ei.value.status == 502 and ei.value.code == "genai_upstream_error"

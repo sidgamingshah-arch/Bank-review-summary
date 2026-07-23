@@ -73,6 +73,14 @@ export function PromptForm({ value, onChange, isNew }: Props) {
         />
         Uses industry KPIs
       </label>
+      <label className="check-pill standalone">
+        <input
+          type="checkbox"
+          checked={value.uses_external_context ?? false}
+          onChange={(e) => onChange({ ...value, uses_external_context: e.target.checked })}
+        />
+        Uses external context (news / web connectors, when enabled)
+      </label>
       <div className="field">
         <label>Rendering hints (optional)</label>
         <input

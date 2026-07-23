@@ -83,3 +83,31 @@ def test_unreadable_file_reports_error(admin_headers):
     body = _upload(b"not a workbook", admin_headers)
     assert body["errors"] and "readable" in body["errors"][0]["message"]
     assert body["created"] == [] and body["updated"] == []
+
+
+def test_numeric_overflow_is_per_row_error_not_500(admin_headers):
+    # an over-large int cell must degrade to a row error, not crash the upload
+    extra = {"doctypes": ["bulk_ovf", "Overflow", "d", "", "", True, "", "1e400", 10, ""]}
+    body = _upload(_filled(extra), admin_headers)
+    assert any(e.get("sheet") == "doctypes" for e in body["errors"])
+    # valid rows still imported (created on first run, updated on re-runs — shared DB)
+    entries = {c["entry"] for c in body["created"]} | {c["entry"] for c in body["updated"]}
+    assert "doctype:bulk_af" in entries
+
+
+def test_missing_key_column_reports_sheet_error(admin_headers):
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_io.build_template_workbook()))
+    wb["doctypes"].cell(row=1, column=1).value = "Code"  # recased key header
+    wb["doctypes"].append(["kc_dt", "Name", "d", "", "", True, "", 25, 10, ""])
+    buf = io.BytesIO()
+    wb.save(buf)
+    body = _upload(buf.getvalue(), admin_headers)
+    assert any(e.get("sheet") == "doctypes" and "key column" in e["message"]
+               for e in body["errors"])
+
+
+def test_orphaned_template_sections_reported(admin_headers):
+    extra = {"template_sections": ["orphan_tpl", 1, "exec_summary", True, "", "", False]}
+    body = _upload(_filled(extra), admin_headers)
+    assert any(e.get("sheet") == "template_sections" and "orphan_tpl" in e["message"]
+               for e in body["errors"])

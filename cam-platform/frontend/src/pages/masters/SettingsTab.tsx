@@ -53,6 +53,10 @@ export function SettingsTab() {
 
   const save = async () => {
     if (!form) return;
+    if (form.tagging_confidence_threshold.trim() === '' || form.agent_revision_limit.trim() === '') {
+      toast.error('Confidence threshold and revision limit are required');
+      return;
+    }
     const threshold = Number(form.tagging_confidence_threshold);
     const revisionLimit = Number(form.agent_revision_limit);
     if (Number.isNaN(threshold) || threshold < 0 || threshold > 1) {

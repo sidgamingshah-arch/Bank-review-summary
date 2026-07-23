@@ -4,6 +4,10 @@ functions so tests can monkeypatch them. Every call goes through the gateway
 """
 from __future__ import annotations
 
+import re
+
+import httpx
+
 from cam.common.config import get_settings
 from cam.common.correlation import CORRELATION_HEADER, get_correlation_id
 from cam.common.http import gateway_client, gateway_headers, raise_for_error
@@ -59,49 +63,67 @@ def _mock_connector_items(kind: str, borrower: str, industry: str) -> list[dict]
                       "no contradicting public disclosures found.")}]
 
 
+def _clean_label_part(value: object) -> str:
+    """External connector fields are untrusted: strip anything that could break
+    out of the <document label="..."> fence (NFR-09)."""
+    return re.sub(r"[<>\r\n\"]+", " ", str(value)).strip()
+
+
 def fetch_connector_context(kind: str, borrower: str, industry: str,
                             max_items: int | None = None) -> list[dict]:
     """Return external-intelligence grounding docs for one connector kind
     ('news'|'search'). ALWAYS fail-open (never raises, never blocks a run):
 
       * endpoint URL configured -> POST it through a short timeout; on any
-        error return [] so the run proceeds on case documents alone;
+        error, non-200, or malformed body, return [] so the run proceeds on
+        case documents alone;
       * no URL configured        -> a deterministic MOCK item (dev/demo).
 
-    Each item is shaped as a grounding doc {doctype_code,label,text} and its
-    text is sanitised for prompt-injection downstream by the genai gateway.
+    The connector is a THIRD-PARTY, out-of-gateway host, so it is called with a
+    plain client carrying ONLY its own X-Connector-Key — never the internal
+    service token (which would hand a valid platform credential to a vendor,
+    NFR-06). Item source/date are sanitised into the label and the text is
+    injection-sanitised downstream by the genai gateway.
     """
     import logging
+    import os
 
+    log = logging.getLogger("cam.orchestration")
     url = getattr(settings, f"connector_{kind}_url", "") or ""
     cap = max_items or settings.connector_max_items
     doctype = _CONNECTOR_DOCTYPES.get(kind, f"external_{kind}")
     try:
         if url:
-            import os
-            headers = gateway_headers(settings)
+            headers = {"Content-Type": "application/json"}
+            cid = get_correlation_id()
+            if cid:
+                headers[CORRELATION_HEADER] = cid
             key = os.environ.get(settings.connector_api_key_env, "")
             if key:
                 headers["X-Connector-Key"] = key
-            with gateway_client(settings, timeout=settings.connector_timeout_seconds) as client:
+            with httpx.Client(timeout=settings.connector_timeout_seconds) as client:
                 resp = client.post(url, json={"borrower": borrower, "industry": industry,
                                               "max_items": cap}, headers=headers)
-                if resp.status_code >= 400:
-                    logging.getLogger("cam.orchestration").warning(
-                        "connector %s returned %s; proceeding without it", kind, resp.status_code)
-                    return []
-                items = (resp.json() or {}).get("items", [])
+            if resp.status_code >= 400:
+                log.warning("connector %s returned %s; proceeding without it",
+                            kind, resp.status_code)
+                return []
+            body = resp.json()
+            items = body.get("items", []) if isinstance(body, dict) else []
         else:
             items = _mock_connector_items(kind, borrower, industry)
+        if not isinstance(items, list):
+            items = []
     except Exception:
-        logging.getLogger("cam.orchestration").warning(
-            "connector %s unreachable; proceeding without it", kind)
+        log.warning("connector %s unreachable; proceeding without it", kind)
         return []
 
     docs = []
     for it in items[:cap]:
-        src = str(it.get("source", kind))
-        date = str(it.get("date", ""))
+        if not isinstance(it, dict):
+            continue
+        src = _clean_label_part(it.get("source", kind))
+        date = _clean_label_part(it.get("date", ""))
         label = f"{kind.upper()}:{src}{(' ' + date) if date else ''}"
         text = str(it.get("text") or it.get("summary") or "").strip()
         if text:

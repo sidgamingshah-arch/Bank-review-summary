@@ -149,13 +149,19 @@ def _num(v: Any, kind: str):
         raise ValueError(f"expected a {kind}, got a boolean")
     try:
         return int(float(v)) if kind == "int" else float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: int(float("1e400")) -> int(inf); re-raise as a per-row
+        # ValueError the row handlers already convert to a reported error.
         raise ValueError(f"'{_s(v)}' is not a valid {kind}")
 
 
-def _sheet_rows(wb, sheet: str, cols: list[str]):
+def _sheet_rows(wb, sheet: str, cols: list[str], key_col: str | None = None,
+                errors: list | None = None):
     """Yield (excel_row_no, {col: value}) for a sheet, mapping by header name.
-    Missing sheet -> nothing."""
+    Missing sheet -> nothing. If key_col is given, the sheet has populated data
+    rows, but that column is absent from the header, append a sheet-level error
+    (so a recased/renamed/deleted key header is not silent data loss) and yield
+    nothing."""
     if sheet not in wb.sheetnames:
         return
     ws = wb[sheet]
@@ -163,10 +169,15 @@ def _sheet_rows(wb, sheet: str, cols: list[str]):
     if not rows:
         return
     header = [_s(h) for h in rows[0]]
+    data = [(n, raw) for n, raw in enumerate(rows[1:], start=2)
+            if not (raw is None or all(c is None or _s(c) == "" for c in raw))]
+    if key_col and errors is not None and data and key_col not in header:
+        errors.append({"sheet": sheet, "row": 1,
+                       "message": f"key column '{key_col}' not found in the header row; "
+                                  "column headers must match the template exactly"})
+        return
     idx = {name: header.index(name) for name in cols if name in header}
-    for excel_row, raw in enumerate(rows[1:], start=2):
-        if raw is None or all(c is None or _s(c) == "" for c in raw):
-            continue
+    for excel_row, raw in data:
         rowd = {name: (raw[i] if i < len(raw) else None) for name, i in idx.items()}
         yield excel_row, rowd
 
@@ -199,7 +210,7 @@ def parse_workbook(raw: bytes) -> tuple[list[dict], list[dict]]:
 
 def _parse_doctypes(wb, errors) -> list[dict]:
     out = []
-    for rn, r in _sheet_rows(wb, "doctypes", DOCTYPE_COLS):
+    for rn, r in _sheet_rows(wb, "doctypes", DOCTYPE_COLS, "code", errors):
         if _skip_key(r.get("code")):
             continue
         try:
@@ -229,7 +240,7 @@ def _parse_doctypes(wb, errors) -> list[dict]:
 
 def _parse_industries(wb, errors) -> list[dict]:
     out = []
-    for _rn, r in _sheet_rows(wb, "industries", INDUSTRY_COLS):
+    for _rn, r in _sheet_rows(wb, "industries", INDUSTRY_COLS, "industry_code", errors):
         if _skip_key(r.get("industry_code")):
             continue
         payload = {"sector_code": _s(r.get("sector_code")),
@@ -242,7 +253,7 @@ def _parse_industries(wb, errors) -> list[dict]:
 
 def _parse_prompts(wb, errors) -> list[dict]:
     out = []
-    for rn, r in _sheet_rows(wb, "prompts", PROMPT_COLS):
+    for rn, r in _sheet_rows(wb, "prompts", PROMPT_COLS, "section_code", errors):
         if _skip_key(r.get("section_code")):
             continue
         try:
@@ -274,7 +285,7 @@ def _parse_prompts(wb, errors) -> list[dict]:
 
 def _parse_kpi_sets(wb, errors) -> list[dict]:
     grouped: dict[str, list[dict]] = {}
-    for rn, r in _sheet_rows(wb, "kpi_sets", KPI_COLS):
+    for rn, r in _sheet_rows(wb, "kpi_sets", KPI_COLS, "industry_code", errors):
         if _skip_key(r.get("industry_code")):
             continue
         code = _s(r.get("kpi_code"))
@@ -293,7 +304,8 @@ def _parse_kpi_sets(wb, errors) -> list[dict]:
 
 def _parse_templates(wb, errors) -> list[dict]:
     sections: dict[str, list[dict]] = {}
-    for rn, r in _sheet_rows(wb, "template_sections", TEMPLATE_SECTION_COLS):
+    for rn, r in _sheet_rows(wb, "template_sections", TEMPLATE_SECTION_COLS,
+                             "template_key", errors):
         if _skip_key(r.get("template_key")):
             continue
         try:
@@ -309,15 +321,22 @@ def _parse_templates(wb, errors) -> list[dict]:
             "length_guidance": _s(r.get("length_guidance")),
             "fixed_format": _bool(r.get("fixed_format"))})
 
-    out = []
-    for _rn, r in _sheet_rows(wb, "templates", TEMPLATE_COLS):
+    out, consumed = [], set()
+    for _rn, r in _sheet_rows(wb, "templates", TEMPLATE_COLS, "key", errors):
         if _skip_key(r.get("key")):
             continue
         key = _s(r.get("key"))
+        consumed.add(key)
         payload = {"name": _s(r.get("name")), "segment": _s(r.get("segment")),
                    "relationship": _s(r.get("relationship")),
                    "template_instructions": _s(r.get("template_instructions")),
                    "sections": sorted(sections.get(key, []), key=lambda s: s["order"]),
                    "required_doc_types": _list(r.get("required_doc_types"))}
         out.append({"mtype": "template", "key": key, "payload": payload})
+
+    # section rows keyed to a template that never appears -> flag, don't drop silently
+    for orphan in sorted(set(sections) - consumed):
+        errors.append({"sheet": "template_sections", "row": 0,
+                       "message": f"template_key '{orphan}' has section rows but no matching "
+                                  "row in the templates sheet"})
     return out

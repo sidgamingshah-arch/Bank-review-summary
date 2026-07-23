@@ -141,6 +141,7 @@ Version     = VersionMeta + {payload}
 ```
 prompt   : {section_code, section_name, scope: "section"|"global", prompt_text,
             source_doc_types: [doctype_code], uses_industry_kpis: bool,
+            uses_external_context: bool,   # opt this section into news/web connectors
             rendering_hints?: str, model_overrides?: {model?, temperature?, max_tokens?}}
 template : {name, segment: "corporate"|"fi"|"project_finance", relationship: "etb"|"ntb",
             template_instructions: str,

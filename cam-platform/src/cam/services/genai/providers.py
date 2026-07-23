@@ -357,7 +357,8 @@ class OpenAICompatibleProvider:
             message = choice.get("message") or {}
             content = message.get("content") or ""
             finish = choice.get("finish_reason")
-        except (ValueError, TypeError, KeyError, IndexError):
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+            # AttributeError: a 200 body that is a JSON array/scalar, not an object
             raise ApiError(502, "genai_upstream_error",
                            "model endpoint returned an unreadable response")
 

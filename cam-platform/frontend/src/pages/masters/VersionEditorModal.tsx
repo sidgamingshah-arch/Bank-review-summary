@@ -36,6 +36,7 @@ function emptyPayload(mtype: MasterType): MasterPayload {
         prompt_text: '',
         source_doc_types: [],
         uses_industry_kpis: false,
+        uses_external_context: false,
       } satisfies PromptPayload;
     case 'templates':
       return {
