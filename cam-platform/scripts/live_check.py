@@ -137,9 +137,15 @@ def run() -> int:
                        if s["section_code"] != "_gaps" and "Fake-endpoint" in s["content"]]
             assert drafted, "no section carries live-endpoint output"
 
+            # the news connector was enabled + opted-in sections exist, so the
+            # gap trailer must deterministically disclose the external source
+            gaps = next((s for s in cam["sections"] if s["section_code"] == "_gaps"), None)
+            assert gaps and "External intelligence consulted" in gaps["content"], \
+                "connector disclosure missing from the gap trailer"
+
             print(f"live run complete: model={run_rec['model_identity']} "
                   f"sections={len(cam['sections'])} tokens_out={tokens_out} "
-                  f"live-drafted={len(drafted)}")
+                  f"live-drafted={len(drafted)}  connector-disclosure=ok")
             print("PASS: CAM_LLM_PROVIDER=openai works end-to-end")
             return 0
     except AssertionError as exc:

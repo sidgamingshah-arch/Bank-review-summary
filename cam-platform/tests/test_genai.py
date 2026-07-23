@@ -78,6 +78,18 @@ def test_generate_rejects_user_tokens():
         assert r.status_code == 403  # NFR-10
 
 
+def test_config_endpoint_is_service_only_and_hides_key(service_headers):
+    with TestClient(genai.app) as c:
+        # end-user tokens are refused (NFR-10)
+        assert c.get("/api/genai/config",
+                     headers=make_user_headers("analyst1", ["analyst"])).status_code == 403
+        cfg = c.get("/api/genai/config", headers=service_headers).json()
+        assert set(cfg) >= {"provider", "model", "base_url", "api_key_configured"}
+        # never leaks the key value — only a boolean and the env-var name
+        assert isinstance(cfg["api_key_configured"], bool)
+        assert "api_key" not in {k for k in cfg if k != "api_key_env" and k != "api_key_configured"}
+
+
 CATALOGUE = [
     {"code": "security_valuation", "name": "Security valuation report",
      "description": "collateral property valuation by an empanelled valuer",

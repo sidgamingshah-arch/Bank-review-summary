@@ -336,12 +336,15 @@ class OpenAICompatibleProvider:
         body = {
             "model": model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
         }
+        # Some models (e.g. Claude opus-4-x behind an OpenAI-compatible gateway)
+        # reject sampling params — mirror the Anthropic path and omit them there.
+        if temperature is not None and not model.startswith(_NO_SAMPLING_PREFIXES):
+            body["temperature"] = temperature
         try:
             resp = self.client.post(self._url, json=body)
         except httpx.HTTPError:
@@ -369,12 +372,20 @@ class OpenAICompatibleProvider:
             raise ApiError(502, "model_refusal",
                            "the model declined this request; section flagged for manual drafting")
 
-        usage_raw = data.get("usage") or {}
-        usage = {"input_tokens": int(usage_raw.get("prompt_tokens", 0) or 0),
-                 "output_tokens": int(usage_raw.get("completion_tokens", 0) or 0)}
-        if not usage["input_tokens"] and not usage["output_tokens"]:
-            usage = _estimate_usage(system, user, content)
-        return GenResult(content=content, model=data.get("model") or model, usage=usage)
+        # usage is best-effort: default to an estimate, override only with clean
+        # numeric counts (a non-dict or non-numeric usage must not 500 the call).
+        usage = _estimate_usage(system, user, content)
+        usage_raw = data.get("usage")
+        if isinstance(usage_raw, dict):
+            try:
+                inp = int(usage_raw.get("prompt_tokens") or 0)
+                out = int(usage_raw.get("completion_tokens") or 0)
+                if inp or out:
+                    usage = {"input_tokens": inp, "output_tokens": out}
+            except (TypeError, ValueError):
+                pass
+        model_id = data.get("model") if isinstance(data.get("model"), str) else None
+        return GenResult(content=content, model=model_id or model, usage=usage)
 
     def generate(self, request: dict, system: str, user: str) -> GenResult:
         return self._call(request, system, user)

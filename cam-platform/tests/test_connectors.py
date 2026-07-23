@@ -31,10 +31,10 @@ def test_connector_mock_shapes(monkeypatch):
 def test_connector_failopen_on_http_error(monkeypatch):
     monkeypatch.setattr(resolver.settings, "connector_news_url", "https://feeds.internal/news")
 
-    def boom(*a, **k):
-        raise RuntimeError("connector down")
+    def handler(request):
+        raise httpx.ConnectError("connector down")
 
-    monkeypatch.setattr(resolver, "gateway_client", boom)
+    _mock_httpx(monkeypatch, handler)
     # never raises; returns [] so the run proceeds on documents alone
     assert resolver.fetch_connector_context("news", "Acme", "Steel") == []
 
@@ -44,24 +44,29 @@ def test_settings_expose_connectors_and_llm(admin_headers):
     assert s["connectors_news_enabled"] is False
     assert s["connectors_search_enabled"] is False
     assert "_llm" in s and set(s["_llm"]) >= {"provider", "model", "api_key_configured"}
+    try:
+        up = mc.put("/api/masters/settings", headers=admin_headers,
+                    json={"connectors_news_enabled": True}).json()
+        assert up["connectors_news_enabled"] is True
+        assert "_llm" in up  # read-only block returned on PUT too
+    finally:
+        # always reset so a mid-test failure can't leak state to the shared DB
+        mc.put("/api/masters/settings", headers=admin_headers,
+               json={"connectors_news_enabled": False})
 
-    up = mc.put("/api/masters/settings", headers=admin_headers,
-                json={"connectors_news_enabled": True}).json()
-    assert up["connectors_news_enabled"] is True
-    assert "_llm" in up  # read-only block returned on PUT too
-    # reset so other tests see the default
-    mc.put("/api/masters/settings", headers=admin_headers, json={"connectors_news_enabled": False})
 
-
-def _run_and_job(uses_external, news_on):
+def _run_and_job(uses_external, connector_docs=None):
+    # connector context is now fetched once at run creation and snapshotted;
+    # the worker only reads resolution["connector_context"].
     resolution = {
         "sections": [{"section_code": "s1", "order": 1,
                       "prompt": {"payload": {"prompt_text": "Assess {{borrower_name}}.",
                                              "uses_industry_kpis": False,
                                              "uses_external_context": uses_external}}}],
         "template": {"template_instructions": ""},
-        "settings": {"connectors_news_enabled": news_on, "connectors_search_enabled": False},
-        "kpis": [], "industry_name": "Steel", "global_rules": None, "case": {},
+        "settings": {}, "kpis": [], "industry_name": "Steel",
+        "global_rules": None, "case": {},
+        "connector_context": {"news": connector_docs} if connector_docs else {},
     }
     run = SimpleNamespace(resolution=resolution, borrower_name="Acme", applied_preferences={})
     job = SimpleNamespace(section_code="s1", fixed_format=False, length_guidance=None,
@@ -69,34 +74,22 @@ def _run_and_job(uses_external, news_on):
     return run, job
 
 
-def test_worker_injects_connector_grounding_when_opted_in(monkeypatch):
+_CONN_DOCS = [{"doctype_code": "external_news", "label": "NEWS:X", "text": "No adverse news."}]
+
+
+def test_worker_injects_snapshotted_connector_grounding_when_opted_in(monkeypatch):
     monkeypatch.setattr(worker.resolver, "fetch_document_text", lambda _id: "Revenue 100 crore.")
-    calls = {}
-
-    def fake_conn(kind, borrower, industry, max_items=None):
-        calls[kind] = (borrower, industry)
-        return [{"doctype_code": "external_news", "label": "NEWS:X", "text": "No adverse news."}]
-
-    monkeypatch.setattr(worker.resolver, "fetch_connector_context", fake_conn)
-
-    run, job = _run_and_job(uses_external=True, news_on=True)
+    run, job = _run_and_job(uses_external=True, connector_docs=_CONN_DOCS)
     payload = worker._section_payload(run, job)
     labels = [d["label"] for d in payload["grounding_docs"]]
     assert "NEWS:X" in labels and "AF" in labels
-    assert calls.get("news") == ("Acme", "Steel")
-    assert "search" not in calls  # search toggle off -> not fetched
 
 
 def test_worker_skips_connector_when_not_opted_in(monkeypatch):
     monkeypatch.setattr(worker.resolver, "fetch_document_text", lambda _id: "Revenue 100 crore.")
-    calls = {}
-    monkeypatch.setattr(worker.resolver, "fetch_connector_context",
-                        lambda *a, **k: calls.setdefault("hit", True) or [])
-
-    # section does not opt in -> connector never consulted even when enabled
-    run, job = _run_and_job(uses_external=False, news_on=True)
+    # snapshot present, but the section does not opt in -> connector ignored
+    run, job = _run_and_job(uses_external=False, connector_docs=_CONN_DOCS)
     payload = worker._section_payload(run, job)
-    assert calls == {}
     assert [d["label"] for d in payload["grounding_docs"]] == ["AF"]
 
 
@@ -147,11 +140,13 @@ def test_connector_label_is_injection_sanitised(monkeypatch):
 
 
 def test_gap_trailer_discloses_external_sources():
-    run = SimpleNamespace(gaps=[])
+    # disclosure is deterministic: read from the run's connector snapshot,
+    # NOT scraped from model-written fact sources.
+    run = SimpleNamespace(gaps=[], resolution={"connector_context": {
+        "news": [{"label": "NEWS:MOCK-NEWS recent", "text": "screen clear"}]}})
     sec = SimpleNamespace(
         name="Industry & Market Analysis", status="complete", skip_reason=None,
-        error=None, untraceable=[], checks={},
-        facts=[{"source": "NEWS:MOCK-NEWS recent", "value": "12", "quote": "...12 months..."}])
+        error=None, untraceable=[], checks={}, facts=[])
     trailer = worker.build_gap_trailer(run, [sec])
     assert "External intelligence consulted" in trailer
     assert "NEWS:MOCK-NEWS recent" in trailer

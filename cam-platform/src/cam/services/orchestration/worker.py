@@ -91,16 +91,16 @@ def build_gap_trailer(run: Run, sections: list[SectionJob]) -> str:
         for role in ("materiality", "consistency"):
             if checks.get(role, {}).get("passed") is None and checks.get(role):
                 unchecked.append(f"- {s.name}: {role} check returned no usable verdict")
-    # transparency: external (non-case) intelligence consulted via connectors
-    external = []
-    for s in sections:
-        seen = {str(f.get("source", "")) for f in (s.facts or [])
-                if str(f.get("source", "")).startswith(("NEWS:", "SEARCH:"))}
-        for src in sorted(seen):
-            external.append(f"- {s.name}: {src}")
+    # transparency (FR-D05): external (non-case) intelligence consulted via
+    # connectors — read deterministically from the run's snapshot (what the
+    # worker actually fetched), not scraped from model-written fact sources.
+    connector_context = (run.resolution or {}).get("connector_context") or {}
+    external = sorted({str(d.get("label", kind)) for kind, docs in connector_context.items()
+                       for d in (docs or [])})
     if external:
         parts.append("**External intelligence consulted (client-provided connectors, "
-                     "verify against primary sources):**\n" + "\n".join(external))
+                     "verify against primary sources):**\n"
+                     + "\n".join(f"- {label}" for label in external))
 
     if mat_lines:
         parts.append("**Materiality-check agent — unresolved material omissions:**\n"
@@ -208,18 +208,13 @@ def _section_payload(run: Run, job: SectionJob) -> dict:
         grounding.append({"doctype_code": ref["doctype_code"], "label": ref["label"],
                           "text": text})
 
-    # External-intelligence grounding (client-provided connectors, integrated):
-    # only when this section's prompt opts in AND the connector is enabled in
-    # the run's settings snapshot. fetch_connector_context is fail-open, so a
-    # connector outage never blocks the run; disabled connectors add nothing,
-    # leaving the pipeline identical to a document-only run.
-    pipeline_settings = resolution.get("settings") or {}
+    # External-intelligence grounding: fetched once per run and snapshotted in
+    # resolution["connector_context"] (see create_run). Opted-in sections just
+    # read it here — no per-section vendor calls. Empty unless a connector was
+    # enabled AND some section opted in, so a document-only run is unchanged.
     if prompt_payload.get("uses_external_context"):
-        industry = resolution.get("industry_name", "")
-        if pipeline_settings.get("connectors_news_enabled"):
-            grounding += resolver.fetch_connector_context("news", run.borrower_name, industry)
-        if pipeline_settings.get("connectors_search_enabled"):
-            grounding += resolver.fetch_connector_context("search", run.borrower_name, industry)
+        for docs in (resolution.get("connector_context") or {}).values():
+            grounding += docs
 
     global_rules = (resolution.get("global_rules") or {}).get("prompt_text")
     return {

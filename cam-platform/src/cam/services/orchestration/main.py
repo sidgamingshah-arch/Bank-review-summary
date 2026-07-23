@@ -138,14 +138,31 @@ def create_run(body: RunCreate, request: Request,
         "doctypes": resolved.get("doctype_master_versions", {}),
         "kpi_set": kpi.get("kpi_set_version"),
     }
+    # External connectors are borrower/sector-scoped, so fetch each enabled one
+    # ONCE per run (not once per section) and snapshot it into the immutable
+    # resolution: this makes disclosure deterministic (independent of what the
+    # model later writes) and avoids duplicate vendor calls across sections.
+    settings_snapshot = resolved.get("settings", {})
+    industry_name = (kpi.get("industry") or {}).get("industry_name", "")
+    connector_context: dict[str, list] = {}
+    if any(s["prompt"]["payload"].get("uses_external_context") for s in resolved["sections"]):
+        borrower = case.get("borrower_name", "")
+        if settings_snapshot.get("connectors_news_enabled"):
+            connector_context["news"] = resolver.fetch_connector_context(
+                "news", borrower, industry_name)
+        if settings_snapshot.get("connectors_search_enabled"):
+            connector_context["search"] = resolver.fetch_connector_context(
+                "search", borrower, industry_name)
+
     resolution = {
         "template": resolved["template"], "sections": resolved["sections"],
         "global_rules": resolved.get("global_rules"),
         "agent_rules": resolved.get("agent_rules", {}),
-        "settings": resolved.get("settings", {}),
+        "settings": settings_snapshot,
         "kpis": kpi.get("kpis", []),
-        "industry_name": (kpi.get("industry") or {}).get("industry_name", ""),
+        "industry_name": industry_name,
         "case": {"segment": case.get("segment", ""), "relationship": case.get("relationship", "")},
+        "connector_context": connector_context,
     }
 
     with SessionLocal() as db:

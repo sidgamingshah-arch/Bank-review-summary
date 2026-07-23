@@ -37,6 +37,22 @@ def get_provider():
     return _provider
 
 
+@app.get("/api/genai/config")
+def config(principal: Principal = Depends(require_service)):
+    """Non-secret view of the LLM egress config, from THIS (authoritative)
+    service's environment (NFR-10). The key value is never returned — only
+    whether the configured env var is populated (NFR-06)."""
+    import os
+    return {
+        "provider": settings.llm_provider,
+        "model": settings.genai_model,
+        "base_url": settings.genai_base_url or None,
+        "max_tokens": settings.genai_max_tokens,
+        "api_key_env": settings.genai_api_key_env,
+        "api_key_configured": bool(os.environ.get(settings.genai_api_key_env)),
+    }
+
+
 class GroundingDoc(BaseModel):
     doctype_code: str = "unknown"
     label: str = ""

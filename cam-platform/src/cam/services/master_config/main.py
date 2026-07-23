@@ -72,10 +72,19 @@ def _audit(action: str, mtype: str, key: str, version_no: int, principal: Princi
 # (registered before the generic /{mtype} routes so they never shadow-match)
 
 def _llm_info() -> dict:
-    """Read-only view of the deployment's LLM egress config, derived from this
-    service's own (shared) Settings. The API key value is NEVER returned — only
+    """Read-only view of the LLM egress config. Sourced from the genai-gateway
+    (the authoritative single egress, NFR-10) so it is correct even when the
+    endpoint/key live only on that service; falls back to this service's own env
+    if the gateway is unreachable. The API key value is NEVER returned — only
     whether the configured env var is populated (NFR-06)."""
     import os
+    try:
+        with gateway_client(settings, timeout=5.0) as client:
+            resp = client.get("/api/genai/config", headers=gateway_headers(settings))
+            if resp.status_code < 400:
+                return resp.json()
+    except Exception:  # fail-soft: gateway down -> show this service's own view
+        pass
     return {
         "provider": settings.llm_provider,
         "model": settings.genai_model,
@@ -393,11 +402,13 @@ def bulk_template(principal: Principal = Depends(require("masters:read"))):
 
 
 @app.post("/api/masters/bulk-upload")
-async def bulk_upload(file: UploadFile,
-                      principal: Principal = Depends(require("masters:draft"))):
+def bulk_upload(file: UploadFile,
+                principal: Principal = Depends(require("masters:draft"))):
     """Bulk-create/update masters from a filled-in template workbook. Every
-    entry lands as a DRAFT (maker-checker unchanged); returns a per-entry report."""
-    entries, parse_errors = parse_workbook(await file.read())
+    entry lands as a DRAFT (maker-checker unchanged); returns a per-entry report.
+    Sync def (like import_bundle) so the synchronous DB work runs in the
+    threadpool rather than blocking the event loop."""
+    entries, parse_errors = parse_workbook(file.file.read())
     with SessionLocal() as db:
         result = _import_entries(db, entries, principal, "bulk workbook upload")
         db.commit()
