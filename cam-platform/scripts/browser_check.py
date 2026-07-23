@@ -118,6 +118,29 @@ def check_admin(browser) -> None:
     context.close()
 
 
+def check_new_admin_ui(browser) -> None:
+    print("\n[admin1] bulk import + connector/LLM settings")
+    context, page = login(browser, "admin1")
+
+    page.goto(APP + "/admin/masters/bulk")
+    page.wait_for_selector("text=Bulk import masters", timeout=15_000)
+    with page.expect_download(timeout=30_000) as dl:
+        page.get_by_role("button", name="Download template (.xlsx)").click()
+    tmpl = SHOTS / dl.value.suggested_filename
+    dl.value.save_as(str(tmpl))
+    assert tmpl.stat().st_size > 2_000, "empty bulk template download"
+    print(f"  ✔ bulk-upload template downloaded through the browser "
+          f"({tmpl.stat().st_size // 1024} KB)")
+    shot(page, "bulk_import_tab")
+
+    page.goto(APP + "/admin/masters/settings")
+    page.wait_for_selector("text=Platform settings", timeout=15_000)
+    page.wait_for_selector("text=Negative-news connector", timeout=10_000)
+    page.wait_for_selector("h2:has-text('LLM endpoint')", timeout=10_000)
+    shot(page, "settings_connectors_and_llm")
+    context.close()
+
+
 def check_analyst_flow(browser, files: list[Path]) -> None:
     print("\n[analyst1] case → uploads → auto-tags → generation → workspace")
     context, page = login(browser, "analyst1")
@@ -205,6 +228,7 @@ def main() -> None:
                 browser = p.chromium.launch(executable_path=CHROMIUM, headless=True,
                                             args=["--no-sandbox"])
                 check_admin(browser)
+                check_new_admin_ui(browser)
                 check_analyst_flow(browser, files)
                 check_auditor(browser)
                 browser.close()
