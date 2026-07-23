@@ -91,6 +91,17 @@ def build_gap_trailer(run: Run, sections: list[SectionJob]) -> str:
         for role in ("materiality", "consistency"):
             if checks.get(role, {}).get("passed") is None and checks.get(role):
                 unchecked.append(f"- {s.name}: {role} check returned no usable verdict")
+    # transparency: external (non-case) intelligence consulted via connectors
+    external = []
+    for s in sections:
+        seen = {str(f.get("source", "")) for f in (s.facts or [])
+                if str(f.get("source", "")).startswith(("NEWS:", "SEARCH:"))}
+        for src in sorted(seen):
+            external.append(f"- {s.name}: {src}")
+    if external:
+        parts.append("**External intelligence consulted (client-provided connectors, "
+                     "verify against primary sources):**\n" + "\n".join(external))
+
     if mat_lines:
         parts.append("**Materiality-check agent — unresolved material omissions:**\n"
                      + "\n".join(mat_lines))
@@ -196,6 +207,19 @@ def _section_payload(run: Run, job: SectionJob) -> dict:
         text = resolver.fetch_document_text(ref["doc_id"])
         grounding.append({"doctype_code": ref["doctype_code"], "label": ref["label"],
                           "text": text})
+
+    # External-intelligence grounding (client-provided connectors, integrated):
+    # only when this section's prompt opts in AND the connector is enabled in
+    # the run's settings snapshot. fetch_connector_context is fail-open, so a
+    # connector outage never blocks the run; disabled connectors add nothing,
+    # leaving the pipeline identical to a document-only run.
+    pipeline_settings = resolution.get("settings") or {}
+    if prompt_payload.get("uses_external_context"):
+        industry = resolution.get("industry_name", "")
+        if pipeline_settings.get("connectors_news_enabled"):
+            grounding += resolver.fetch_connector_context("news", run.borrower_name, industry)
+        if pipeline_settings.get("connectors_search_enabled"):
+            grounding += resolver.fetch_connector_context("search", run.borrower_name, industry)
 
     global_rules = (resolution.get("global_rules") or {}).get("prompt_text")
     return {

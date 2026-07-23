@@ -1,11 +1,15 @@
 """Move master configuration between environments (deploy-time swap of the
-prompt library, templates, doc types, taxonomy and KPI sets).
+prompt library, templates, doc types, taxonomy and KPI sets), and bulk-load
+masters from an Excel workbook.
 
     python scripts/masters_bundle.py export bundle.json --user admin1
     python scripts/masters_bundle.py import bundle.json --user admin1
+    python scripts/masters_bundle.py template masters.xlsx        # download blank template
+    python scripts/masters_bundle.py bulk-upload masters.xlsx     # upload a filled workbook
 
-Export captures every PUBLISHED master; import lands them as DRAFTS in the
-target environment — maker-checker approval still governs publication there.
+Export captures every PUBLISHED master; import / bulk-upload land them as
+DRAFTS in the target environment — maker-checker approval still governs
+publication there.
 """
 from __future__ import annotations
 
@@ -23,8 +27,8 @@ from seed_demo import GATEWAY, login  # noqa: E402
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["export", "import"])
-    parser.add_argument("path", help="bundle JSON file")
+    parser.add_argument("action", choices=["export", "import", "template", "bulk-upload"])
+    parser.add_argument("path", help="bundle JSON file, or .xlsx for template/bulk-upload")
     parser.add_argument("--user", default="admin1", help="business-admin username")
     parser.add_argument("--gateway", default=GATEWAY)
     args = parser.parse_args()
@@ -47,16 +51,28 @@ def main() -> None:
             bundle = r.json()
             Path(args.path).write_text(json.dumps(bundle, indent=2, ensure_ascii=False))
             print(f"exported {len(bundle['masters'])} published masters -> {args.path}")
-        else:
-            bundle = json.loads(Path(args.path).read_text())
-            r = client.post("/api/masters/import-bundle", headers=headers,
-                            json={"masters": bundle["masters"]})
+        elif args.action == "template":
+            r = client.get("/api/masters/bulk-template", headers=headers)
+            r.raise_for_status()
+            Path(args.path).write_bytes(r.content)
+            print(f"wrote blank bulk-upload template -> {args.path}")
+        elif args.action in ("import", "bulk-upload"):
+            if args.action == "import":
+                bundle = json.loads(Path(args.path).read_text())
+                r = client.post("/api/masters/import-bundle", headers=headers,
+                                json={"masters": bundle["masters"]})
+            else:
+                files = {"file": (Path(args.path).name, Path(args.path).read_bytes(),
+                                  "application/vnd.openxmlformats-officedocument."
+                                  "spreadsheetml.sheet")}
+                r = client.post("/api/masters/bulk-upload", headers=headers, files=files)
             r.raise_for_status()
             report = r.json()
             print(f"created: {len(report['created'])}  updated: {len(report['updated'])}  "
                   f"unchanged: {len(report['unchanged'])}  errors: {len(report['errors'])}")
             for err in report["errors"]:
-                print(f"  ✘ {err['entry']}: {err['message']}")
+                where = err.get("entry") or f"{err.get('sheet', '?')} row {err.get('row', '?')}"
+                print(f"  ✘ {where}: {err['message']}")
             print(report["note"])
             if report["errors"]:
                 sys.exit(1)

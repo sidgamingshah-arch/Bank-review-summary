@@ -10,6 +10,7 @@ import { useToast } from '../../components/Toast';
 import { MasterDetail } from './MasterDetail';
 import { VersionEditorModal } from './VersionEditorModal';
 import { SettingsTab } from './SettingsTab';
+import { BulkImportTab } from './BulkImportTab';
 
 const TABS: { id: string; label: string }[] = [
   { id: 'prompts', label: 'Prompts' },
@@ -17,6 +18,7 @@ const TABS: { id: string; label: string }[] = [
   { id: 'doctypes', label: 'Doc Types' },
   { id: 'industries', label: 'Industries' },
   { id: 'kpi-sets', label: 'KPI Sets' },
+  { id: 'bulk', label: 'Bulk import' },
   { id: 'settings', label: 'Settings' },
 ];
 
@@ -225,7 +227,13 @@ export function MastersPage() {
           </button>
         ))}
       </div>
-      {tab === 'settings' ? <SettingsTab /> : <MasterWorkbench mtype={tab as MasterType} key={tab} />}
+      {tab === 'settings' ? (
+        <SettingsTab />
+      ) : tab === 'bulk' ? (
+        <BulkImportTab />
+      ) : (
+        <MasterWorkbench mtype={tab as MasterType} key={tab} />
+      )}
     </div>
   );
 }

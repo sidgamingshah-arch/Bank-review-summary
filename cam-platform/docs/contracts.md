@@ -105,16 +105,28 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
 - `GET /api/masters/resolve/template/{key}` → `ResolvedTemplate` (below) — 404/`not_published` if any part unpublished
 - `POST /api/masters/kpi-sets/bulk` (multipart `file`=CSV) → `{created:[], updated:[], errors:[{row, message}]}` (drafts only)
 - `GET /api/masters/kpi-sets/export.csv` → CSV of published KPI sets
+- `GET /api/masters/bulk-template` (`masters:read`) → `.xlsx` workbook: one sheet per
+  master type (doctypes, industries, prompts, kpi_sets, templates + template_sections),
+  worked example rows, and a README. List cells are `|`-separated; a row is ignored if its
+  key cell is blank or starts with `#`/`example`.
+- `POST /api/masters/bulk-upload` (multipart `file`=.xlsx, `masters:draft`) →
+  `{created:[{entry, version_no}], updated:[{entry, version_no}], unchanged:[entry],
+  errors:[{entry?|sheet+row, message}], note}` — parses the workbook, imports every row as a
+  DRAFT in dependency order (same idempotency/ordering as import-bundle). Audit `master.bulk_uploaded`.
 - `POST /api/masters/prompts/{key}/sandbox-test` `{sample_docs: [{doctype_code, text}], placeholders?: {}}` → `{content, model, usage}` (FR-A05; calls genai with the DRAFT latest version)
 - `GET /api/masters/export-bundle` (business_admin/auditor) → `{bundle_version, masters:
   [{mtype, key, version, payload}], settings}` — every published master, for environment
   portability. `POST /api/masters/import-bundle` `{masters}` (business_admin) → imports as
   DRAFTS in dependency order (doctypes → industries → prompts → KPI sets → templates),
   skipping entries identical to the published payload; maker-checker still governs
-  publication. CLI: `scripts/masters_bundle.py export|import bundle.json`.
+  publication. CLI: `scripts/masters_bundle.py export|import bundle.json` and
+  `scripts/masters_bundle.py template|bulk-upload masters.xlsx`.
 - `GET /api/masters/settings` → `{tagging_confidence_threshold, tagging_mode,
-  agents_materiality_enabled, agents_consistency_enabled, agent_revision_limit}` ·
-  `PUT /api/masters/settings` (business_admin)
+  agents_materiality_enabled, agents_consistency_enabled, agent_revision_limit,
+  connectors_search_enabled, connectors_news_enabled, _llm:{provider, model, base_url,
+  max_tokens, api_key_env, api_key_configured}}` (`_llm` is a read-only view of the
+  env-configured LLM egress — no secret value) · `PUT /api/masters/settings` (business_admin;
+  whitelist — only the scalar/bool keys above, not `_llm`)
 - `GET /api/masters/published/doctypes` → `[doctype payload]` (all currently-published doc types;
   used by tagging/document services — avoids N+1 version lookups)
 
@@ -256,11 +268,21 @@ Run = {id, case_id, template_key, status: "queued"|"running"|"complete"|"partial
 ```
 
 Worker: DB-backed queue (`SectionJob` rows, `SELECT ... FOR UPDATE SKIP LOCKED` semantics),
-in-process asyncio workers (`GEN_WORKER_CONCURRENCY`, default 2). Per-user active-run cap
-`MAX_ACTIVE_RUNS_PER_USER` (default 2) → `429 rate_limited` (FR-D07).
+in-process asyncio workers (`CAM_WORKER_CONCURRENCY`, default 2; set `CAM_WORKER_ENABLED=false`
+to disable the loop and drive `worker.drain()` synchronously, as the tests do). Per-user
+active-run cap `CAM_MAX_ACTIVE_RUNS_PER_USER` (default 2) → `429 rate_limited` (FR-D07).
 On run completion (all sections terminal): POST CAM to output service with every completed
-section + a **data-gap trailer** section (`section_code: "_gaps"`) listing missing inputs and
-untraceable figures (FR-D05); then set `run.cam_id`.
+section + a **data-gap trailer** section (`section_code: "_gaps"`) listing missing inputs,
+untraceable figures, and any external connector sources consulted (FR-D05); then set `run.cam_id`.
+
+External connectors (client-provided, integrated): when a section's prompt sets
+`uses_external_context` **and** the matching toggle is on in settings
+(`connectors_news_enabled` / `connectors_search_enabled`), the worker enriches that section's
+extraction grounding with the connector's source-labelled items. Endpoint URLs are deployment
+config (`CAM_CONNECTOR_NEWS_URL` / `CAM_CONNECTOR_SEARCH_URL`, key via
+`CAM_CONNECTOR_API_KEY_ENV`); an enabled toggle with no URL uses a clearly-marked mock feed.
+The fetch is fail-open (tight timeout, empty on error) so a connector outage never fails a run;
+off by default → document-only generation, identical to before.
 
 ---
 
@@ -303,8 +325,17 @@ governed prompt-master entry for that role when published (reserved global keys
 - `POST /api/genai/edit`
   `{current_content, instruction, scope: "document"|"section", grounding_docs: [..],
     preferences: PreferenceProfileInput|null}` → `{proposed_content, rationale, model, usage}`
-- Providers: `LLM_PROVIDER=mock` (default; deterministic, offline) | `anthropic`
-  (`ANTHROPIC_API_KEY`, model `GENAI_MODEL`). Provider/model identity returned on every call.
+- Providers (`CAM_LLM_PROVIDER`, model `CAM_GENAI_MODEL`, `CAM_GENAI_MAX_TOKENS`):
+  - `mock` (default) — deterministic, offline; echoes only figures present in the grounding.
+  - `anthropic` — official SDK; `ANTHROPIC_API_KEY` read by the SDK from the env.
+  - `openai` — any OpenAI-compatible `/v1/chat/completions` endpoint: `CAM_GENAI_BASE_URL`
+    (include the version prefix), key from the env var named by `CAM_GENAI_API_KEY_ENV`
+    (default `CAM_GENAI_API_KEY`), `CAM_GENAI_AUTH_SCHEME` (default `Bearer`),
+    `CAM_GENAI_TEMPERATURE`, `CAM_GENAI_TIMEOUT_SECONDS`. Upstream/transport failures →
+    `502 genai_upstream_error`; a content-filter stop → `502 model_refusal`. The key value is
+    never stored on Settings and never logged (NFR-06).
+  Provider/model identity is returned on every call. The provider is built once per process
+  (a config change needs a restart). See `docs/LIVE_RUN.md`.
 
 ---
 
@@ -371,7 +402,8 @@ Append-only, hash-chained (tamper-evident): `hash = sha256(prev_hash + canonical
                case_id?, run_id?, cam_id?, correlation_id, detail, prev_hash, hash}`
 
 Canonical action strings: `master.created|master.version_created|master.submitted|
-master.approved|master.rejected|master.rolled_back|settings.updated|case.created|
+master.approved|master.rejected|master.rolled_back|master.bundle_exported|
+master.bundle_imported|master.bulk_uploaded|settings.updated|case.created|
 document.uploaded|document.pulled|document.quarantined|document.deleted|tag.auto_applied|
 tag.added|tag.changed|tag.removed|run.started|run.section_completed|run.section_failed|
 run.section_retried|run.section_regenerated|run.completed|cam.created|cam.section_edited|

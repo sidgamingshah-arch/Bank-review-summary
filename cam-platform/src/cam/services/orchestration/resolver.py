@@ -38,6 +38,77 @@ def fetch_document_text(doc_id: str) -> str:
     return _get(f"/api/documents/{doc_id}/text", "document text").get("text", "")
 
 
+# external grounding connectors (client-provided, integrated) --------------
+_CONNECTOR_DOCTYPES = {"news": "external_news", "search": "external_web"}
+
+
+def _mock_connector_items(kind: str, borrower: str, industry: str) -> list[dict]:
+    """Deterministic stand-in used when a connector is enabled but no endpoint
+    URL is configured — lets the 'with connectors' path run and be tested
+    offline. Clearly labelled MOCK so it is never mistaken for a live feed."""
+    if kind == "news":
+        return [{"title": f"{borrower} negative-news screen",
+                 "source": "MOCK-NEWS", "date": "recent",
+                 "text": (f"Media screen for {borrower}: no adverse regulatory action or "
+                          f"default events identified in the {industry or 'sector'} press "
+                          "over the trailing 12 months.")}]
+    return [{"title": f"{industry or 'sector'} market context",
+             "source": "MOCK-WEB", "date": "recent",
+             "text": (f"Public market context for {borrower} ({industry or 'sector'}): "
+                      "peer set and demand indicators consistent with the case file; "
+                      "no contradicting public disclosures found.")}]
+
+
+def fetch_connector_context(kind: str, borrower: str, industry: str,
+                            max_items: int | None = None) -> list[dict]:
+    """Return external-intelligence grounding docs for one connector kind
+    ('news'|'search'). ALWAYS fail-open (never raises, never blocks a run):
+
+      * endpoint URL configured -> POST it through a short timeout; on any
+        error return [] so the run proceeds on case documents alone;
+      * no URL configured        -> a deterministic MOCK item (dev/demo).
+
+    Each item is shaped as a grounding doc {doctype_code,label,text} and its
+    text is sanitised for prompt-injection downstream by the genai gateway.
+    """
+    import logging
+
+    url = getattr(settings, f"connector_{kind}_url", "") or ""
+    cap = max_items or settings.connector_max_items
+    doctype = _CONNECTOR_DOCTYPES.get(kind, f"external_{kind}")
+    try:
+        if url:
+            import os
+            headers = gateway_headers(settings)
+            key = os.environ.get(settings.connector_api_key_env, "")
+            if key:
+                headers["X-Connector-Key"] = key
+            with gateway_client(settings, timeout=settings.connector_timeout_seconds) as client:
+                resp = client.post(url, json={"borrower": borrower, "industry": industry,
+                                              "max_items": cap}, headers=headers)
+                if resp.status_code >= 400:
+                    logging.getLogger("cam.orchestration").warning(
+                        "connector %s returned %s; proceeding without it", kind, resp.status_code)
+                    return []
+                items = (resp.json() or {}).get("items", [])
+        else:
+            items = _mock_connector_items(kind, borrower, industry)
+    except Exception:
+        logging.getLogger("cam.orchestration").warning(
+            "connector %s unreachable; proceeding without it", kind)
+        return []
+
+    docs = []
+    for it in items[:cap]:
+        src = str(it.get("source", kind))
+        date = str(it.get("date", ""))
+        label = f"{kind.upper()}:{src}{(' ' + date) if date else ''}"
+        text = str(it.get("text") or it.get("summary") or "").strip()
+        if text:
+            docs.append({"doctype_code": doctype, "label": label, "text": text})
+    return docs
+
+
 def fetch_user_preferences(user_auth_header: str) -> dict:
     """Run creation resolves the creator's preference profile with THEIR token
     (falls back to the org default inside the auth service)."""

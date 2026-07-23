@@ -83,4 +83,9 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "agents_materiality_enabled": True,
     "agents_consistency_enabled": True,
     "agent_revision_limit": 1,
+    # external grounding connectors (client-provided, integrated). Off by
+    # default so runs work exactly as before until an admin enables them; a
+    # section only consults a connector when its prompt sets uses_external_context.
+    "connectors_search_enabled": False,
+    "connectors_news_enabled": False,
 }

@@ -51,7 +51,18 @@ CAM_LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=... make stack
 # model defaults to claude-opus-4-8; override with CAM_GENAI_MODEL
 ```
 
-Bedrock/Vertex are provider additions behind the same interface (ADR-0005).
+Or point at **your own OpenAI-compatible endpoint** (vLLM, LiteLLM, Azure
+OpenAI, Ollama, a bank-hosted gateway):
+
+```bash
+CAM_LLM_PROVIDER=openai CAM_GENAI_BASE_URL=https://llm.internal/v1 \
+CAM_GENAI_MODEL=your-model CAM_GENAI_API_KEY=... make stack
+python scripts/llm_smoke.py     # validate the endpoint first
+```
+
+Full walkthrough — including bulk-loading your prompt library and the
+search/negative-news connectors — is in **[docs/LIVE_RUN.md](docs/LIVE_RUN.md)**.
+Bedrock/Vertex are further provider additions behind the same interface (ADR-0005).
 
 ## Moving configuration between environments
 

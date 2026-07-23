@@ -164,8 +164,25 @@ export type MasterPayload =
   | IndustryPayload
   | KpiSetPayload;
 
+// Read-only view of the deployment's LLM egress config (no secret value).
+export interface LlmInfo {
+  provider: string;
+  model: string;
+  base_url: string | null;
+  max_tokens: number;
+  api_key_env: string;
+  api_key_configured: boolean;
+}
+
 export interface MasterSettings {
   tagging_confidence_threshold: number;
+  tagging_mode?: 'ai_first' | 'keyword_first' | 'keyword_only';
+  agents_materiality_enabled?: boolean;
+  agents_consistency_enabled?: boolean;
+  agent_revision_limit?: number;
+  connectors_search_enabled?: boolean;
+  connectors_news_enabled?: boolean;
+  _llm?: LlmInfo;
   [key: string]: unknown;
 }
 
@@ -173,6 +190,15 @@ export interface KpiBulkReport {
   created: string[];
   updated: string[];
   errors: { row: number; message: string }[];
+}
+
+// Report returned by the Excel bulk-upload / JSON bundle import.
+export interface MastersBulkReport {
+  created: { entry: string; version_no: number }[];
+  updated: { entry: string; version_no: number }[];
+  unchanged: string[];
+  errors: { entry?: string; sheet?: string; row?: number; message: string }[];
+  note: string;
 }
 
 export interface SandboxResult {
@@ -454,7 +480,8 @@ export interface CamLineage {
 
 export const AUDIT_ACTIONS: string[] = [
   'master.created', 'master.version_created', 'master.submitted', 'master.approved',
-  'master.rejected', 'master.rolled_back', 'settings.updated', 'case.created',
+  'master.rejected', 'master.rolled_back', 'master.bundle_exported', 'master.bundle_imported',
+  'master.bulk_uploaded', 'settings.updated', 'case.created',
   'document.uploaded', 'document.pulled', 'document.quarantined', 'document.deleted',
   'tag.auto_applied', 'tag.added', 'tag.changed', 'tag.removed', 'run.started',
   'run.section_completed', 'run.section_failed', 'run.section_retried',

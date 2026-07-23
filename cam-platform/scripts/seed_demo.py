@@ -207,11 +207,15 @@ def seed(client: httpx.Client) -> dict:
             "section_name": rule_key.replace("_", " ").title(),
             "scope": "global", "source_doc_types": [], "uses_industry_kpis": False,
             "prompt_text": rule_text})
+    # sections that benefit from external market/news context when a connector
+    # is enabled (no effect while connectors stay off — the default)
+    external_sections = {"industry_analysis", "risk_mitigants"}
     for code, name, text, sources, uses_kpis, _fixed in [*SECTION_PROMPTS, PROJECT_PROMPT]:
         versions[f"prompt:{code}"] = publish(client, admin1, admin2, "prompts", code, {
             "section_code": code, "section_name": name, "scope": "section",
             "prompt_text": text, "source_doc_types": sources,
-            "uses_industry_kpis": uses_kpis})
+            "uses_industry_kpis": uses_kpis,
+            "uses_external_context": code in external_sections})
 
     versions["template:corp-etb"] = publish(client, admin1, admin2, "templates",
                                             "corp-etb", TEMPLATE)

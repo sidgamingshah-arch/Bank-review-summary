@@ -25,6 +25,9 @@ from . import engine as eng
 from .csv_io import parse_kpi_csv, render_kpi_csv
 from .models import DEFAULT_SETTINGS, MTYPES, MasterItem, MasterVersion, Setting
 from .schemas import AGENT_RULE_KEYS, GLOBAL_PROMPT_KEY, validate_payload
+from .xlsx_io import build_template_workbook, parse_workbook
+
+XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 settings = get_settings("master-config")
 engine = make_engine(settings.resolved_db_url())
@@ -68,11 +71,26 @@ def _audit(action: str, mtype: str, key: str, version_no: int, principal: Princi
 # ---------------------------------------------------------------- specific routes
 # (registered before the generic /{mtype} routes so they never shadow-match)
 
+def _llm_info() -> dict:
+    """Read-only view of the deployment's LLM egress config, derived from this
+    service's own (shared) Settings. The API key value is NEVER returned — only
+    whether the configured env var is populated (NFR-06)."""
+    import os
+    return {
+        "provider": settings.llm_provider,
+        "model": settings.genai_model,
+        "base_url": settings.genai_base_url or None,
+        "max_tokens": settings.genai_max_tokens,
+        "api_key_env": settings.genai_api_key_env,
+        "api_key_configured": bool(os.environ.get(settings.genai_api_key_env)),
+    }
+
+
 @app.get("/api/masters/settings")
 def get_settings_map(principal: Principal = Depends(require("masters:read"))):
     with SessionLocal() as db:
         stored = {s.key: s.value.get("value") for s in db.scalars(select(Setting)).all()}
-    return {**DEFAULT_SETTINGS, **stored}
+    return {**DEFAULT_SETTINGS, **stored, "_llm": _llm_info()}
 
 
 class SettingsPatch(BaseModel):
@@ -81,6 +99,8 @@ class SettingsPatch(BaseModel):
     agents_materiality_enabled: bool | None = None
     agents_consistency_enabled: bool | None = None
     agent_revision_limit: int | None = Field(default=None, ge=0, le=3)
+    connectors_search_enabled: bool | None = None
+    connectors_news_enabled: bool | None = None
 
 
 @app.put("/api/masters/settings")
@@ -102,7 +122,7 @@ def put_settings(body: SettingsPatch, principal: Principal = Depends(require("ma
         audit.emit(settings, action="settings.updated", entity_type="settings", entity_id="global",
                    principal=principal, detail={"before": before, "after": updates})
         stored = {s.key: s.value.get("value") for s in db.scalars(select(Setting)).all()}
-    return {**DEFAULT_SETTINGS, **stored}
+    return {**DEFAULT_SETTINGS, **stored, "_llm": _llm_info()}
 
 
 @app.get("/api/masters/published/doctypes")
@@ -314,46 +334,78 @@ def export_bundle(principal: Principal = Depends(require("masters:read"))):
             "masters": masters, "settings": {**DEFAULT_SETTINGS, **stored}}
 
 
+def _import_entries(db, entries: list[dict], principal: Principal,
+                    change_note: str) -> dict:
+    """Land a list of {mtype,key,payload} dicts as DRAFTS, in dependency order.
+    Shared by the JSON bundle import and the Excel bulk upload. Entries that
+    match the current published payload are skipped (idempotent, no 409).
+    Caller commits."""
+    created, updated, unchanged, errors = [], [], [], []
+    ordered = sorted(entries, key=lambda e: _IMPORT_ORDER.get(e["mtype"], 9))
+    for entry in ordered:
+        mtype, key, payload = entry["mtype"], entry["key"], entry["payload"]
+        ref = f"{mtype}:{key}"
+        if mtype not in _IMPORT_ORDER:
+            errors.append({"entry": ref, "message": "unknown master type"})
+            continue
+        normalised, verrors = validate_payload(mtype, key, payload, **_catalogue(db))
+        if verrors:
+            errors.append({"entry": ref, "message": "; ".join(verrors)})
+            continue
+        item = eng.get_item(db, mtype, key)
+        if item:
+            published = eng.published_version(db, item)
+            if published and published.payload == normalised:
+                unchanged.append(ref)
+                continue
+            version = eng.add_version(db, item, normalised, change_note, principal.username)
+            updated.append({"entry": ref, "version_no": version.version_no})
+        else:
+            _, version = eng.create_item(db, mtype, key, normalised, change_note,
+                                         principal.username)
+            created.append({"entry": ref, "version_no": version.version_no})
+        db.flush()  # catalogue grows as entries import (ordering above)
+    return {"created": created, "updated": updated, "unchanged": unchanged, "errors": errors}
+
+
 @app.post("/api/masters/import-bundle")
 def import_bundle(body: BundleImport,
                   principal: Principal = Depends(require("masters:draft"))):
     """Import a bundle as DRAFTS — maker-checker still governs publication.
     Entries identical to the current published payload are skipped."""
-    created, updated, unchanged, errors = [], [], [], []
-    entries = sorted(body.masters, key=lambda e: _IMPORT_ORDER.get(e.mtype, 9))
     with SessionLocal() as db:
-        for entry in entries:
-            ref = f"{entry.mtype}:{entry.key}"
-            if entry.mtype not in _IMPORT_ORDER:
-                errors.append({"entry": ref, "message": "unknown master type"})
-                continue
-            normalised, verrors = validate_payload(entry.mtype, entry.key, entry.payload,
-                                                   **_catalogue(db))
-            if verrors:
-                errors.append({"entry": ref, "message": "; ".join(verrors)})
-                continue
-            item = eng.get_item(db, entry.mtype, entry.key)
-            if item:
-                published = eng.published_version(db, item)
-                if published and published.payload == normalised:
-                    unchanged.append(ref)
-                    continue
-                version = eng.add_version(db, item, normalised, "bundle import",
-                                          principal.username)
-                updated.append({"entry": ref, "version_no": version.version_no})
-            else:
-                _, version = eng.create_item(db, entry.mtype, entry.key, normalised,
-                                             "bundle import", principal.username)
-                created.append({"entry": ref, "version_no": version.version_no})
-            db.flush()  # catalogue grows as the bundle imports (ordering above)
+        result = _import_entries(db, [e.model_dump() for e in body.masters],
+                                 principal, "bundle import")
         db.commit()
     audit.emit(settings, action="master.bundle_imported", entity_type="masters",
                entity_id="bundle", principal=principal,
-               detail={"created": len(created), "updated": len(updated),
-                       "unchanged": len(unchanged), "errors": len(errors)})
-    return {"created": created, "updated": updated, "unchanged": unchanged,
-            "errors": errors,
-            "note": "imported versions are drafts; submit + approve to publish"}
+               detail={k: len(result[k]) for k in ("created", "updated", "unchanged", "errors")})
+    return {**result, "note": "imported versions are drafts; submit + approve to publish"}
+
+
+@app.get("/api/masters/bulk-template")
+def bulk_template(principal: Principal = Depends(require("masters:read"))):
+    """Download the Excel bulk-upload template (one sheet per master type,
+    worked example rows, README)."""
+    return Response(build_template_workbook(), media_type=XLSX_MEDIA,
+                    headers={"Content-Disposition":
+                             "attachment; filename=cam-masters-template.xlsx"})
+
+
+@app.post("/api/masters/bulk-upload")
+async def bulk_upload(file: UploadFile,
+                      principal: Principal = Depends(require("masters:draft"))):
+    """Bulk-create/update masters from a filled-in template workbook. Every
+    entry lands as a DRAFT (maker-checker unchanged); returns a per-entry report."""
+    entries, parse_errors = parse_workbook(await file.read())
+    with SessionLocal() as db:
+        result = _import_entries(db, entries, principal, "bulk workbook upload")
+        db.commit()
+    result["errors"] = parse_errors + result["errors"]
+    audit.emit(settings, action="master.bulk_uploaded", entity_type="masters",
+               entity_id="bulk", principal=principal,
+               detail={k: len(result[k]) for k in ("created", "updated", "unchanged", "errors")})
+    return {**result, "note": "imported versions are drafts; submit + approve to publish"}
 
 
 # ---------------------------------------------------------------- generic master routes

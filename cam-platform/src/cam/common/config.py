@@ -26,9 +26,29 @@ class Settings(BaseSettings):
     db_url: str = ""  # empty -> sqlite file under data_dir
 
     # genai
-    llm_provider: str = "mock"  # mock | anthropic
+    llm_provider: str = "mock"  # mock | anthropic | openai
     genai_model: str = "claude-opus-4-8"
     genai_max_tokens: int = 2000
+    # User-supplied / OpenAI-compatible endpoint (llm_provider="openai"): vLLM,
+    # LiteLLM, Azure OpenAI, Ollama, a bank-hosted gateway, etc. The base URL
+    # should include the version path prefix (e.g. https://llm.internal/v1);
+    # "/chat/completions" is appended. The API key itself is NEVER stored on
+    # Settings — only the NAME of the env var that holds it; the value is read
+    # from os.environ at provider construction and never logged (NFR-06).
+    genai_base_url: str = ""
+    genai_api_key_env: str = "CAM_GENAI_API_KEY"
+    genai_auth_scheme: str = "Bearer"  # Authorization: "<scheme> <key>"; "" -> raw key
+    genai_temperature: float = 0.0
+    genai_timeout_seconds: float = 120.0
+
+    # External grounding connectors (client-provided, integrated). The endpoint
+    # URL is deployment config (here); the on/off toggle is a master setting
+    # (business-admin controlled). Empty URL + toggle on -> deterministic mock.
+    connector_news_url: str = ""
+    connector_search_url: str = ""
+    connector_api_key_env: str = "CAM_CONNECTOR_API_KEY"
+    connector_timeout_seconds: float = 8.0
+    connector_max_items: int = 5
 
     # intake / generation guardrails
     max_upload_mb: int = 25

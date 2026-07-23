@@ -30,6 +30,9 @@ class PromptPayload(BaseModel):
     prompt_text: str = Field(min_length=10)
     source_doc_types: list[str] = []
     uses_industry_kpis: bool = False
+    # when true, and a connector is enabled in settings, this section's
+    # extraction grounding is enriched with client-provided news/search context
+    uses_external_context: bool = False
     rendering_hints: str = ""
     model_overrides: ModelOverrides | None = None
 

@@ -6,11 +6,18 @@
                meaningful end-to-end without network access.
 ``anthropic``— the bank-approved model endpoint via the official Anthropic SDK
                (swap-in point for Bedrock/Vertex per the bank's hosting choice).
+``openai``   — any user-supplied, OpenAI-compatible chat-completions endpoint
+               (vLLM, LiteLLM, Azure OpenAI, Ollama, a bank-hosted gateway).
+               Configured entirely from env: base URL, model, and an API key
+               read from a named env var at construction — never logged (NFR-06).
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
+
+import httpx
 
 from cam.common.config import Settings
 from cam.common.errors import ApiError
@@ -289,7 +296,109 @@ class AnthropicProvider:
         return self._call(request, system, user)
 
 
+# ------------------------------------------------------- openai-compatible
+
+class OpenAICompatibleProvider:
+    """A user-supplied, OpenAI-compatible chat-completions endpoint.
+
+    One HTTP path serves every role; the pre-assembled ``system`` and ``user``
+    strings are sent verbatim as chat messages (the provider never re-assembles
+    prompts). The API key is read from the env var named by
+    ``settings.genai_api_key_env`` and held only on the HTTP client's headers —
+    it is never stored on Settings and never logged (NFR-06). Upstream failures
+    map to the same 502 envelope the Anthropic path uses.
+    """
+
+    name = "openai"
+
+    def __init__(self, settings: Settings):
+        if not settings.genai_base_url:
+            raise ApiError(500, "genai_misconfigured",
+                           "CAM_GENAI_BASE_URL must be set when CAM_LLM_PROVIDER=openai")
+        self.settings = settings
+        self._url = settings.genai_base_url.rstrip("/") + "/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        key = os.environ.get(settings.genai_api_key_env, "")
+        if key:
+            scheme = (settings.genai_auth_scheme or "").strip()
+            headers["Authorization"] = f"{scheme} {key}".strip()
+        # kept for the process lifetime (provider is a get_provider() singleton)
+        self.client = httpx.Client(timeout=settings.genai_timeout_seconds, headers=headers)
+
+    def _call(self, request: dict, system: str, user: str) -> GenResult:
+        overrides = request.get("model_overrides") or {}
+        model = overrides.get("model") or self.settings.genai_model
+        max_tokens = overrides.get("max_tokens") or self.settings.genai_max_tokens
+        temperature = overrides.get("temperature")
+        if temperature is None:
+            temperature = self.settings.genai_temperature
+
+        body = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        try:
+            resp = self.client.post(self._url, json=body)
+        except httpx.HTTPError:
+            # message deliberately carries no request/response detail (NFR-06)
+            raise ApiError(502, "genai_upstream_error", "model endpoint unreachable")
+
+        if resp.status_code >= 400:
+            raise ApiError(502, "genai_upstream_error",
+                           f"model endpoint returned {resp.status_code}")
+        try:
+            data = resp.json()
+            choice = (data.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            content = message.get("content") or ""
+            finish = choice.get("finish_reason")
+        except (ValueError, TypeError, KeyError, IndexError):
+            raise ApiError(502, "genai_upstream_error",
+                           "model endpoint returned an unreadable response")
+
+        if isinstance(content, list):  # some gateways return content as parts
+            content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+
+        if finish == "content_filter":
+            raise ApiError(502, "model_refusal",
+                           "the model declined this request; section flagged for manual drafting")
+
+        usage_raw = data.get("usage") or {}
+        usage = {"input_tokens": int(usage_raw.get("prompt_tokens", 0) or 0),
+                 "output_tokens": int(usage_raw.get("completion_tokens", 0) or 0)}
+        if not usage["input_tokens"] and not usage["output_tokens"]:
+            usage = _estimate_usage(system, user, content)
+        return GenResult(content=content, model=data.get("model") or model, usage=usage)
+
+    def generate(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
+
+    def edit(self, request: dict, system: str, user: str) -> GenResult:
+        result = self._call(request, system, user)
+        result.rationale = "Revision proposed by the model per the analyst's instruction."
+        return result
+
+    def classify(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
+
+    def extract(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
+
+    def materiality(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
+
+    def consistency(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
+
+
 def make_provider(settings: Settings):
     if settings.llm_provider == "anthropic":
         return AnthropicProvider(settings)
+    if settings.llm_provider == "openai":
+        return OpenAICompatibleProvider(settings)
     return MockProvider(settings)
