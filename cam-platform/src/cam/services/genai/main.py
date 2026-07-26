@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from cam.common.app_factory import create_app
 from cam.common.config import get_settings
+from cam.common.http import gateway_client, gateway_headers
 from cam.common.security import Principal, make_auth_dependencies
 
 from . import agents
@@ -27,29 +28,75 @@ current_principal, require, require_service = make_auth_dependencies(settings)
 
 app = create_app(settings, "CAM genai-gateway")
 
+# The LLM egress config is env defaults, overlaid with admin-set overrides
+# fetched from master-config (non-secret fields only; the API key is ALWAYS
+# from env, NFR-06). Overrides load lazily and are refreshed by /reload, which
+# master-config calls when an admin saves — so changes apply without a restart.
 _provider = None
+_overrides: dict | None = None
+
+_LLM_OVERRIDE_FIELDS = ("llm_provider", "genai_model", "genai_base_url", "genai_temperature",
+                        "genai_max_tokens", "genai_timeout_seconds", "genai_auth_scheme",
+                        "genai_api_key_env")
+
+
+def _load_overrides() -> dict:
+    """Admin-set LLM overrides from master-config; {} on any failure (env only),
+    so the gateway keeps working if master-config is unreachable."""
+    try:
+        with gateway_client(settings, timeout=5.0) as client:
+            resp = client.get("/api/masters/llm-config", headers=gateway_headers(settings))
+            if resp.status_code < 400:
+                data = resp.json() or {}
+                return {k: v for k, v in data.items()
+                        if k in _LLM_OVERRIDE_FIELDS and v is not None}
+    except Exception:  # fail-open to environment defaults
+        pass
+    return {}
+
+
+def _effective_settings():
+    global _overrides
+    if _overrides is None:
+        _overrides = _load_overrides()
+    return settings.model_copy(update=_overrides) if _overrides else settings
 
 
 def get_provider():
     global _provider
     if _provider is None:
-        _provider = make_provider(settings)
+        _provider = make_provider(_effective_settings())
     return _provider
+
+
+@app.post("/api/genai/reload")
+def reload_provider(principal: Principal = Depends(require_service)):
+    """Re-read the admin LLM config and rebuild the provider (no restart).
+    master-config calls this when the config is saved."""
+    global _provider, _overrides
+    _overrides = _load_overrides()
+    _provider = None
+    eff = _effective_settings()
+    return {"reloaded": True, "provider": eff.llm_provider, "model": eff.genai_model}
 
 
 @app.get("/api/genai/config")
 def config(principal: Principal = Depends(require_service)):
-    """Non-secret view of the LLM egress config, from THIS (authoritative)
-    service's environment (NFR-10). The key value is never returned — only
-    whether the configured env var is populated (NFR-06)."""
+    """Non-secret view of the EFFECTIVE LLM egress config (env overlaid with
+    admin overrides). The key value is never returned — only whether the
+    configured env var is populated (NFR-06)."""
     import os
+    eff = _effective_settings()
     return {
-        "provider": settings.llm_provider,
-        "model": settings.genai_model,
-        "base_url": settings.genai_base_url or None,
-        "max_tokens": settings.genai_max_tokens,
-        "api_key_env": settings.genai_api_key_env,
-        "api_key_configured": bool(os.environ.get(settings.genai_api_key_env)),
+        "provider": eff.llm_provider,
+        "model": eff.genai_model,
+        "base_url": eff.genai_base_url or None,
+        "max_tokens": eff.genai_max_tokens,
+        "temperature": eff.genai_temperature,
+        "timeout_seconds": eff.genai_timeout_seconds,
+        "auth_scheme": eff.genai_auth_scheme,
+        "api_key_env": eff.genai_api_key_env,
+        "api_key_configured": bool(os.environ.get(eff.genai_api_key_env)),
     }
 
 

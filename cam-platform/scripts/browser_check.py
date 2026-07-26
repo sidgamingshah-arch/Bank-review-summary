@@ -136,7 +136,10 @@ def check_new_admin_ui(browser) -> None:
     page.goto(APP + "/admin/masters/settings")
     page.wait_for_selector("text=Platform settings", timeout=15_000)
     page.wait_for_selector("text=Negative-news connector", timeout=10_000)
+    # LLM endpoint is now an editable admin option — save it and confirm it applies
     page.wait_for_selector("h2:has-text('LLM endpoint')", timeout=10_000)
+    page.get_by_role("button", name="Save LLM endpoint").click()
+    page.wait_for_selector("text=LLM endpoint saved", timeout=15_000)
     shot(page, "settings_connectors_and_llm")
     context.close()
 

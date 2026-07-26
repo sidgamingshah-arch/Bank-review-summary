@@ -7,6 +7,7 @@ master-config and are cached briefly so a burst of uploads does not hammer it.
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any, Callable
@@ -99,7 +100,13 @@ def llm_classify(filename: str, text: str, doctypes: list[dict]) -> dict | None:
             resp = client.post("/api/genai/classify", json=payload,
                                headers=gateway_headers(settings))
             raise_for_error(resp, "genai classify")
-            return resp.json()
+            result = resp.json()
+        usage = result.get("usage") or {}
+        logging.getLogger("cam.tagging").info(
+            "agent-tokens agent=auto_tagging model=%s in=%d out=%d file=%s",
+            result.get("model", "") or "unknown", int(usage.get("input_tokens", 0)),
+            int(usage.get("output_tokens", 0)), filename)
+        return result
     except Exception:
         return None
 

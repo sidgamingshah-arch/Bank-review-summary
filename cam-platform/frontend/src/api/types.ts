@@ -165,14 +165,29 @@ export type MasterPayload =
   | IndustryPayload
   | KpiSetPayload;
 
-// Read-only view of the deployment's LLM egress config (no secret value).
+// Effective LLM egress config (no secret value; the key is env/vault-only).
 export interface LlmInfo {
   provider: string;
   model: string;
   base_url: string | null;
   max_tokens: number;
+  temperature?: number;
+  timeout_seconds?: number;
+  auth_scheme?: string;
   api_key_env: string;
   api_key_configured: boolean;
+}
+
+// Editable, non-secret LLM config (PUT /api/masters/llm-config).
+export interface LlmConfigInput {
+  llm_provider?: string;
+  genai_model?: string | null;
+  genai_base_url?: string | null;
+  genai_temperature?: number | null;
+  genai_max_tokens?: number | null;
+  genai_timeout_seconds?: number | null;
+  genai_auth_scheme?: string | null;
+  genai_api_key_env?: string | null;
 }
 
 export interface MasterSettings {

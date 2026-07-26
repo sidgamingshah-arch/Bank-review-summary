@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, errorMessage } from '../../api/client';
-import type { LlmInfo, MasterSettings } from '../../api/types';
+import type { LlmConfigInput, LlmInfo, MasterSettings } from '../../api/types';
 import { PageLoading } from '../../components/Spinner';
 import { useToast } from '../../components/Toast';
 
@@ -12,6 +12,17 @@ interface Editable {
   agent_revision_limit: string;
   connectors_news_enabled: boolean;
   connectors_search_enabled: boolean;
+}
+
+interface LlmForm {
+  provider: string;
+  model: string;
+  base_url: string;
+  temperature: string;
+  max_tokens: string;
+  timeout_seconds: string;
+  auth_scheme: string;
+  api_key_env: string;
 }
 
 function toForm(s: MasterSettings): Editable {
@@ -26,20 +37,41 @@ function toForm(s: MasterSettings): Editable {
   };
 }
 
+function toLlmForm(l: LlmInfo): LlmForm {
+  return {
+    provider: l.provider ?? 'mock',
+    model: l.model ?? '',
+    base_url: l.base_url ?? '',
+    temperature: String(l.temperature ?? 0),
+    max_tokens: String(l.max_tokens ?? 2000),
+    timeout_seconds: String(l.timeout_seconds ?? 120),
+    auth_scheme: l.auth_scheme ?? 'Bearer',
+    api_key_env: l.api_key_env ?? 'CAM_GENAI_API_KEY',
+  };
+}
+
 export function SettingsTab() {
   const toast = useToast();
-  const [llm, setLlm] = useState<LlmInfo | null>(null);
   const [form, setForm] = useState<Editable | null>(null);
+  const [llm, setLlm] = useState<LlmForm | null>(null);
+  const [keyConfigured, setKeyConfigured] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingLlm, setSavingLlm] = useState(false);
+
+  const ingest = (s: MasterSettings) => {
+    setForm(toForm(s));
+    if (s._llm) {
+      setLlm(toLlmForm(s._llm));
+      setKeyConfigured(Boolean(s._llm.api_key_configured));
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
     api
       .get<MasterSettings>('/api/masters/settings')
       .then((s) => {
-        if (cancelled) return;
-        setForm(toForm(s));
-        setLlm(s._llm ?? null);
+        if (!cancelled) ingest(s);
       })
       .catch((err) => toast.error(errorMessage(err)));
     return () => {
@@ -50,6 +82,8 @@ export function SettingsTab() {
 
   const set = <K extends keyof Editable>(key: K, value: Editable[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f));
+  const setL = <K extends keyof LlmForm>(key: K, value: LlmForm[K]) =>
+    setLlm((f) => (f ? { ...f, [key]: value } : f));
 
   const save = async () => {
     if (!form) return;
@@ -78,13 +112,57 @@ export function SettingsTab() {
         connectors_news_enabled: form.connectors_news_enabled,
         connectors_search_enabled: form.connectors_search_enabled,
       });
-      setForm(toForm(updated));
-      setLlm(updated._llm ?? llm);
+      ingest(updated);
       toast.success('Settings saved');
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveLlm = async () => {
+    if (!llm) return;
+    const temperature = Number(llm.temperature);
+    const maxTokens = Number(llm.max_tokens);
+    const timeout = Number(llm.timeout_seconds);
+    if (Number.isNaN(temperature) || temperature < 0 || temperature > 2) {
+      toast.error('Temperature must be between 0 and 2');
+      return;
+    }
+    if (!Number.isInteger(maxTokens) || maxTokens < 64 || maxTokens > 8192) {
+      toast.error('Max tokens must be an integer between 64 and 8192');
+      return;
+    }
+    if (Number.isNaN(timeout) || timeout < 1 || timeout > 600) {
+      toast.error('Timeout must be between 1 and 600 seconds');
+      return;
+    }
+    if (llm.provider === 'openai' && !llm.base_url.trim()) {
+      toast.error('Base URL is required for the OpenAI-compatible provider');
+      return;
+    }
+    const body: LlmConfigInput = {
+      llm_provider: llm.provider,
+      genai_model: llm.model.trim() || null,
+      genai_base_url: llm.base_url.trim() || null,
+      genai_temperature: temperature,
+      genai_max_tokens: maxTokens,
+      genai_timeout_seconds: timeout,
+      genai_auth_scheme: llm.auth_scheme,
+      genai_api_key_env: llm.api_key_env.trim() || null,
+    };
+    setSavingLlm(true);
+    try {
+      await api.put('/api/masters/llm-config', body);
+      // re-read effective config (the gateway has reloaded)
+      const fresh = await api.get<MasterSettings>('/api/masters/settings');
+      ingest(fresh);
+      toast.success('LLM endpoint saved and applied');
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setSavingLlm(false);
     }
   };
 
@@ -195,31 +273,81 @@ export function SettingsTab() {
         <div className="card settings-card">
           <div className="card-head">
             <h2>LLM endpoint</h2>
-            <span className="chip chip-gray">read-only · set via environment</span>
+            <span className={`chip ${keyConfigured ? 'chip-green' : 'chip-amber'}`}>
+              API key {keyConfigured ? 'configured' : 'not set'}
+            </span>
           </div>
-          <dl className="kv">
-            <dt>Provider</dt>
-            <dd className="mono">{llm.provider}</dd>
-            <dt>Model</dt>
-            <dd className="mono">{llm.model}</dd>
-            <dt>Base URL</dt>
-            <dd className="mono">{llm.base_url ?? '— (SDK default)'}</dd>
-            <dt>Max tokens</dt>
-            <dd className="mono">{llm.max_tokens}</dd>
-            <dt>API key</dt>
-            <dd>
-              {llm.api_key_configured ? (
-                <span className="chip chip-green">configured</span>
-              ) : (
-                <span className="chip chip-amber">not set</span>
-              )}{' '}
-              <span className="muted mono">({llm.api_key_env})</span>
-            </dd>
-          </dl>
+
+          <div className="form-grid-2">
+            <div className="field">
+              <label>Provider</label>
+              <select
+                className="select slim"
+                value={llm.provider}
+                onChange={(e) => setL('provider', e.target.value)}
+              >
+                <option value="mock">mock (offline, deterministic)</option>
+                <option value="anthropic">anthropic (official SDK)</option>
+                <option value="openai">openai-compatible endpoint</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Model</label>
+              <input className="input slim" value={llm.model} onChange={(e) => setL('model', e.target.value)} />
+            </div>
+          </div>
+
+          <div className="field">
+            <label>Base URL {llm.provider === 'openai' ? '(required)' : '(openai only)'}</label>
+            <input
+              className="input slim"
+              placeholder="https://llm.internal/v1"
+              value={llm.base_url}
+              onChange={(e) => setL('base_url', e.target.value)}
+            />
+          </div>
+
+          <div className="form-grid-3">
+            <div className="field">
+              <label>Temperature</label>
+              <input className="input slim" type="number" min={0} max={2} step={0.1}
+                value={llm.temperature} onChange={(e) => setL('temperature', e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Max tokens</label>
+              <input className="input slim" type="number" min={64} max={8192} step={1}
+                value={llm.max_tokens} onChange={(e) => setL('max_tokens', e.target.value)} />
+            </div>
+            <div className="field">
+              <label>Timeout (s)</label>
+              <input className="input slim" type="number" min={1} max={600} step={1}
+                value={llm.timeout_seconds} onChange={(e) => setL('timeout_seconds', e.target.value)} />
+            </div>
+          </div>
+
+          <div className="form-grid-2">
+            <div className="field">
+              <label>Auth scheme</label>
+              <input className="input slim" placeholder="Bearer"
+                value={llm.auth_scheme} onChange={(e) => setL('auth_scheme', e.target.value)} />
+            </div>
+            <div className="field">
+              <label>API key env var</label>
+              <input className="input slim mono"
+                value={llm.api_key_env} onChange={(e) => setL('api_key_env', e.target.value)} />
+            </div>
+          </div>
+
           <div className="hint">
-            The provider, endpoint and model are configured through environment variables
-            (CAM_LLM_PROVIDER, CAM_GENAI_BASE_URL, CAM_GENAI_MODEL) and read at service start — the
-            API key value is never exposed here. Changing them requires a service restart.
+            The API <strong>key value</strong> is never entered or stored here — set it in the
+            environment/vault variable named above (status shown top-right). Saving applies the
+            config to the gateway immediately, no restart required.
+          </div>
+
+          <div className="actions-row">
+            <button type="button" className="btn btn-primary" disabled={savingLlm} onClick={saveLlm}>
+              {savingLlm ? 'Saving…' : 'Save LLM endpoint'}
+            </button>
           </div>
         </div>
       ) : null}

@@ -41,7 +41,8 @@ class Stack:
 
     def start(self, wait: bool = True) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        env = {**os.environ, "CAM_DATA_DIR": self.data_dir, "PYTHONUNBUFFERED": "1"}
+        env = {**os.environ, "CAM_DATA_DIR": self.data_dir, "PYTHONUNBUFFERED": "1",
+               "CAM_LOG_LEVEL": os.environ.get("CAM_LOG_LEVEL", "info")}
         for name, module, port in SERVICES:
             log = open(self.log_dir / f"{name}.log", "w")
             self.procs.append(subprocess.Popen(

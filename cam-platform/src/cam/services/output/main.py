@@ -457,6 +457,10 @@ def chat(cam_id: str, body: ChatInput,
         reply = genai_edit(payload)
         proposed = reply.get("proposed_content") or ""
         rationale = reply.get("rationale") or ""
+        _u = reply.get("usage") or {}
+        log.info("agent-tokens agent=conversational_copilot cam=%s scope=%s model=%s in=%d out=%d",
+                 cam.id, body.scope, reply.get("model", "") or "unknown",
+                 int(_u.get("input_tokens", 0)), int(_u.get("output_tokens", 0)))
 
         suggestion = None
         if body.scope == "section":

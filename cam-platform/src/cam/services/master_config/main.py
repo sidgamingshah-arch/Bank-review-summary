@@ -134,6 +134,76 @@ def put_settings(body: SettingsPatch, principal: Principal = Depends(require("ma
     return {**DEFAULT_SETTINGS, **stored, "_llm": _llm_info()}
 
 
+# ---- editable LLM egress config (non-secret; the API key stays env/vault-only)
+LLM_CONFIG_KEYS = ("llm_provider", "genai_model", "genai_base_url", "genai_temperature",
+                   "genai_max_tokens", "genai_timeout_seconds", "genai_auth_scheme",
+                   "genai_api_key_env")
+
+
+def _reload_genai() -> None:
+    """Tell the genai gateway to re-read the LLM config (no restart). Fail-open:
+    the gateway also (re)loads from the DB on its own next load."""
+    import logging
+    try:
+        with gateway_client(settings, timeout=5.0) as client:
+            client.post("/api/genai/reload", headers=gateway_headers(settings))
+    except Exception:
+        logging.getLogger("cam.master-config").info(
+            "genai reload notification failed; new LLM config applies on next genai load")
+
+
+@app.get("/api/masters/llm-config")
+def get_llm_config(principal: Principal = Depends(require("masters:read"))):
+    """Admin-set LLM egress overrides (only the keys an admin has set; absent
+    keys fall back to the genai service's environment). Never a key VALUE."""
+    with SessionLocal() as db:
+        stored = {s.key: s.value.get("value") for s in db.scalars(select(Setting)).all()}
+    return {k: stored[k] for k in LLM_CONFIG_KEYS if k in stored}
+
+
+class LlmConfigPatch(BaseModel):
+    llm_provider: Literal["mock", "anthropic", "openai"] | None = None
+    genai_model: str | None = None
+    genai_base_url: str | None = None
+    genai_temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    genai_max_tokens: int | None = Field(default=None, ge=64, le=8192)
+    genai_timeout_seconds: float | None = Field(default=None, ge=1, le=600)
+    genai_auth_scheme: str | None = None
+    genai_api_key_env: str | None = None
+
+
+@app.put("/api/masters/llm-config")
+def put_llm_config(body: LlmConfigPatch,
+                   principal: Principal = Depends(require("masters:settings"))):
+    """Persist non-secret LLM egress config and push a live reload to the
+    gateway. The API key itself is never accepted or stored here (NFR-06) — set
+    it via the environment/vault variable named by genai_api_key_env."""
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    with SessionLocal() as db:
+        stored = {s.key: s.value.get("value") for s in db.scalars(select(Setting)).all()}
+        merged = {**{k: stored[k] for k in LLM_CONFIG_KEYS if k in stored}, **updates}
+        base_url = str(merged.get("genai_base_url") or "").strip()
+        if merged.get("llm_provider") == "openai" and not base_url:
+            raise ApiError.validation("genai_base_url is required when llm_provider is 'openai'")
+        if updates.get("genai_base_url") and not base_url.lower().startswith(("http://", "https://")):
+            raise ApiError.validation("genai_base_url must start with http:// or https://")
+        before = {k: stored.get(k) for k in updates}
+        for key, value in updates.items():
+            row = db.get(Setting, key)
+            if row:
+                row.value = {"value": value}
+                row.updated_by = principal.username
+            else:
+                db.add(Setting(key=key, value={"value": value}, updated_by=principal.username))
+        db.commit()
+        audit.emit(settings, action="settings.updated", entity_type="settings",
+                   entity_id="llm_config", principal=principal,
+                   detail={"before": before, "after": updates})
+        stored = {s.key: s.value.get("value") for s in db.scalars(select(Setting)).all()}
+    _reload_genai()
+    return {k: stored[k] for k in LLM_CONFIG_KEYS if k in stored}
+
+
 @app.get("/api/masters/published/doctypes")
 def published_doctypes(principal: Principal = Depends(require("masters:read"))):
     with SessionLocal() as db:

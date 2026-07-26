@@ -125,8 +125,16 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
   agents_materiality_enabled, agents_consistency_enabled, agent_revision_limit,
   connectors_search_enabled, connectors_news_enabled, _llm:{provider, model, base_url,
   max_tokens, api_key_env, api_key_configured}}` (`_llm` is a read-only view of the
-  env-configured LLM egress — no secret value) · `PUT /api/masters/settings` (business_admin;
+  effective LLM egress — no secret value) · `PUT /api/masters/settings` (business_admin;
   whitelist — only the scalar/bool keys above, not `_llm`)
+- `GET /api/masters/llm-config` (`masters:read`) → the admin-set LLM overrides (only keys that
+  were set; absent → the gateway's env default). `PUT /api/masters/llm-config` (business_admin)
+  `{llm_provider?: mock|anthropic|openai, genai_model?, genai_base_url?, genai_temperature?,
+  genai_max_tokens?, genai_timeout_seconds?, genai_auth_scheme?, genai_api_key_env?}` → persists
+  the non-secret egress config and pushes a live reload to the gateway (no restart). The API key
+  VALUE is never accepted or stored (NFR-06) — set it in the env/vault var named by
+  `genai_api_key_env`. `base_url` required (http/https) when provider is `openai`. Audits
+  `settings.updated` (entity `llm_config`).
 - `GET /api/masters/published/doctypes` → `[doctype payload]` (all currently-published doc types;
   used by tagging/document services — avoids N+1 version lookups)
 
@@ -268,6 +276,11 @@ Run = {id, case_id, template_key, status: "queued"|"running"|"complete"|"partial
                    agent_trace: [{agent, model, tokens_in, tokens_out, ...}]}]}
 ```
 
+Every agent call is token-logged: the worker emits an `agent-tokens run=.. section=.. agent=..
+in=.. out=..` line per call, and the `run.section_completed` audit event carries a per-agent
+`token_usage: [{agent, model, tokens_in, tokens_out}]` breakdown (plus section `tokens_in/out`).
+The tagging (`auto_tagging`) and copilot (`conversational_copilot`) agents log the same line.
+
 Worker: DB-backed queue (`SectionJob` rows, `SELECT ... FOR UPDATE SKIP LOCKED` semantics),
 in-process asyncio workers (`CAM_WORKER_CONCURRENCY`, default 2; set `CAM_WORKER_ENABLED=false`
 to disable the loop and drive `worker.drain()` synchronously, as the tests do). Per-user
@@ -326,7 +339,13 @@ governed prompt-master entry for that role when published (reserved global keys
 - `POST /api/genai/edit`
   `{current_content, instruction, scope: "document"|"section", grounding_docs: [..],
     preferences: PreferenceProfileInput|null}` → `{proposed_content, rationale, model, usage}`
-- Providers (`CAM_LLM_PROVIDER`, model `CAM_GENAI_MODEL`, `CAM_GENAI_MAX_TOKENS`):
+- `GET /api/genai/config` (service) → the EFFECTIVE egress config `{provider, model, base_url,
+  max_tokens, temperature, timeout_seconds, auth_scheme, api_key_env, api_key_configured}` (env
+  defaults overlaid with the admin overrides; no key value). `POST /api/genai/reload` (service) →
+  re-reads the admin overrides from master-config and rebuilds the provider (called by
+  master-config on save; no restart).
+- Providers (`CAM_LLM_PROVIDER`, model `CAM_GENAI_MODEL`, `CAM_GENAI_MAX_TOKENS`) — env defaults,
+  overlaid at runtime by admin overrides from `PUT /api/masters/llm-config` (key always env-only):
   - `mock` (default) — deterministic, offline; echoes only figures present in the grounding.
   - `anthropic` — official SDK; `ANTHROPIC_API_KEY` read by the SDK from the env.
   - `openai` — any OpenAI-compatible `/v1/chat/completions` endpoint: `CAM_GENAI_BASE_URL`
@@ -335,8 +354,9 @@ governed prompt-master entry for that role when published (reserved global keys
     `CAM_GENAI_TEMPERATURE`, `CAM_GENAI_TIMEOUT_SECONDS`. Upstream/transport failures →
     `502 genai_upstream_error`; a content-filter stop → `502 model_refusal`. The key value is
     never stored on Settings and never logged (NFR-06).
-  Provider/model identity is returned on every call. The provider is built once per process
-  (a config change needs a restart). See `docs/LIVE_RUN.md`.
+  Provider/model identity is returned on every call. The provider is rebuilt when the admin
+  saves new config (via `POST /api/genai/reload`) or lazily on first use after a restart. The
+  API key is always read from the environment/vault (never the DB or the UI). See `docs/LIVE_RUN.md`.
 
 ---
 

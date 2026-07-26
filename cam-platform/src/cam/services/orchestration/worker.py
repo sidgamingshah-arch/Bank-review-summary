@@ -276,6 +276,10 @@ def _run_agent_pipeline(run: Run, job: SectionJob) -> dict:
         tokens_out = int(usage.get("output_tokens", 0))
         totals["in"] += tokens_in
         totals["out"] += tokens_out
+        # per-agent token log line for every agent call (FR observability)
+        log.info("agent-tokens run=%s section=%s agent=%s model=%s in=%d out=%d",
+                 run.id, job.section_code, agent, resp.get("model", "") or "unknown",
+                 tokens_in, tokens_out)
         trace.append({"agent": agent, "model": resp.get("model", ""),
                       "tokens_in": tokens_in, "tokens_out": tokens_out, **extra})
 
@@ -384,7 +388,14 @@ def process_job(job_id: str) -> None:
                    entity_id=f"{run.id}:{job.section_code}", case_id=run.case_id,
                    run_id=run.id, detail={"section": job.section_code, "kind": job.kind,
                                           "untraceable": job.untraceable,
+                                          "tokens_in": job.tokens_in,
                                           "tokens_out": job.tokens_out,
+                                          # per-agent token breakdown (immutable record)
+                                          "token_usage": [
+                                              {"agent": t["agent"], "model": t.get("model", ""),
+                                               "tokens_in": t.get("tokens_in", 0),
+                                               "tokens_out": t.get("tokens_out", 0)}
+                                              for t in job.agent_trace],
                                           "agents": [t["agent"] for t in job.agent_trace],
                                           "checks": {k: v.get("passed")
                                                      for k, v in job.checks.items()}})

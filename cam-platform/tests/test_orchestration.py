@@ -183,6 +183,15 @@ def test_run_end_to_end(wired, analyst_headers, captured_audit):
         completed = next(e for e in captured_audit if e["action"] == "run.completed")
         assert completed["detail"]["master_versions"]["template"] == 3
 
+        # per-agent token usage is recorded for every section (immutable audit)
+        sec_events = [e for e in captured_audit if e["action"] == "run.section_completed"]
+        assert sec_events
+        first = sec_events[0]["detail"]
+        assert "token_usage" in first and first["token_usage"]
+        assert {"agent", "model", "tokens_in", "tokens_out"} <= set(first["token_usage"][0])
+        agents = {u["agent"] for e in sec_events for u in e["detail"]["token_usage"]}
+        assert {"extraction", "summarisation"} <= agents
+
 
 def test_gaps_conflict_and_proceed(wired, analyst_headers, monkeypatch):
     docs_no_sanction = [d for d in DOCS if d["id"] != "doc-2"]

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from '../../api/client';
 import type { Run } from '../../api/types';
@@ -17,6 +17,15 @@ export function RunPage() {
   const [notFound, setNotFound] = useState(false);
   const [recordOpen, setRecordOpen] = useState(false);
   const [retrying, setRetrying] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = (code: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
 
   const fetchRun = useCallback(async (): Promise<void> => {
     try {
@@ -119,8 +128,12 @@ export function RunPage() {
               </tr>
             </thead>
             <tbody>
-              {sections.map((s) => (
-                <tr key={s.section_code}>
+              {sections.map((s) => {
+                const trace = s.agent_trace ?? [];
+                const isOpen = expanded.has(s.section_code);
+                return (
+                <Fragment key={s.section_code}>
+                <tr>
                   <td className="muted">{s.order}</td>
                   <td>
                     <strong>{s.name}</strong> <span className="muted mono">{s.section_code}</span>
@@ -131,6 +144,16 @@ export function RunPage() {
                   <td>{s.attempts}</td>
                   <td className="mono">
                     {s.tokens_in} / {s.tokens_out}
+                    {trace.length > 0 ? (
+                      <button
+                        type="button"
+                        className="trace-toggle"
+                        onClick={() => toggleExpanded(s.section_code)}
+                        title="per-agent token usage"
+                      >
+                        {isOpen ? '▾' : '▸'} {trace.length} agents
+                      </button>
+                    ) : null}
                   </td>
                   <td>
                     {s.error ? <span className="error-text">{s.error}</span> : null}
@@ -173,7 +196,36 @@ export function RunPage() {
                     ) : null}
                   </td>
                 </tr>
-              ))}
+                {isOpen && trace.length > 0 ? (
+                  <tr className="trace-row">
+                    <td></td>
+                    <td colSpan={6}>
+                      <table className="mini-table">
+                        <thead>
+                          <tr>
+                            <th>Agent</th>
+                            <th>Model</th>
+                            <th>Tokens in</th>
+                            <th>Tokens out</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {trace.map((t, i) => (
+                            <tr key={i}>
+                              <td className="mono">{t.agent}</td>
+                              <td className="mono muted">{t.model || '—'}</td>
+                              <td className="mono">{t.tokens_in}</td>
+                              <td className="mono">{t.tokens_out}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                ) : null}
+                </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>

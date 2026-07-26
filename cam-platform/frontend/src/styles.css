@@ -1307,6 +1307,35 @@ a:hover {
   gap: 16px;
 }
 
+.trace-toggle {
+  margin-left: 8px;
+  background: none;
+  border: none;
+  color: var(--accent, #1f51c4);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0;
+}
+.trace-row > td {
+  background: var(--surface-2, #f4f7fb);
+}
+.mini-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.mini-table th,
+.mini-table td {
+  text-align: left;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--line, #dce2ec);
+}
+.mini-table th {
+  color: var(--muted, #5a6580);
+  font-weight: 600;
+}
+
 .settings-group {
   margin: 18px 0 8px;
   font-size: 0.82rem;
