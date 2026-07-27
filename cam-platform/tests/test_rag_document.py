@@ -110,6 +110,30 @@ def test_no_embedding_when_rag_disabled(client, monkeypatch):
     assert calls["n"] == 0  # embedding never called when RAG is off
 
 
+def test_retrieve_stale_dimension_falls_back(client, monkeypatch):
+    # Index at one embedding dimension, then serve a query embedded at a
+    # DIFFERENT dimension (an embedding-model change without reindex). The
+    # stale-dim chunks must not be returned as bogus hits — retrieve reports no
+    # chunks so the caller falls back to full-text grounding.
+    monkeypatch.setattr(vaf, "fetch_rag_enabled", lambda: True)
+    monkeypatch.setattr(vaf.settings, "rag_chunk_size", 60)
+    monkeypatch.setattr(vaf.settings, "rag_chunk_overlap", 15)
+    monkeypatch.setattr(doc_embedding, "embed_texts",
+                        lambda texts: [[1.0, 0.0, 0.0] for _ in texts])  # dim 3 at intake
+    case = _make_case(client)
+    up = _upload(client, case["id"], "r.txt", DOC_BODY.encode())
+    doc_id = up.json()["id"]
+
+    monkeypatch.setattr(doc_embedding, "embed_texts",
+                        lambda texts: [[1.0, 0.0, 0.0, 0.0, 0.0] for _ in texts])  # dim 5 query
+    r = client.post("/api/documents/retrieve",
+                    json={"doc_ids": [doc_id], "query": "cash flow", "top_k": 3},
+                    headers=SERVICE).json()
+    assert r["query_embedded"] is True
+    assert r["results"][0]["chunks"] == []
+    assert r["results"][0]["reason"] == "not_embedded"  # -> full-text fallback
+
+
 def test_retrieve_missing_document_is_reported_not_error(client, rag_on):
     r = client.post("/api/documents/retrieve",
                     json={"doc_ids": ["does-not-exist"], "query": "x", "top_k": 3},

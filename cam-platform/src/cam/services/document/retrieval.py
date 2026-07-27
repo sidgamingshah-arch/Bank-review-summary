@@ -38,9 +38,19 @@ def rank(query_vec: list[float], chunks: list[Any], top_k: int) -> list[dict]:
     scored: list[tuple[float, Any]] = []
     for c in chunks:
         emb = getattr(c, "embedding", None)
-        if not isinstance(emb, list):
+        # Skip chunks with no usable vector OR a stale dimension: if the
+        # embedding model/dim changed and the corpus was not reindexed, the
+        # query vector and the stored vectors differ in length. cosine() would
+        # score every such chunk 0.0, and without this guard rank() would still
+        # return the document's opening chunks as "hits" — masquerading as
+        # relevant passages and defeating the full-text fallback. Skipping them
+        # yields zero hits so the caller falls back to full text (fail-open).
+        if not isinstance(emb, list) or len(emb) != len(query_vec):
             continue
-        scored.append((cosine(query_vec, emb), c))
+        score = cosine(query_vec, emb)
+        if score <= 0.0:
+            continue  # no positive relevance -> not a hit (honest provenance)
+        scored.append((score, c))
     # deterministic ordering: score desc, then chunk_index asc for ties
     scored.sort(key=lambda t: (-t[0], getattr(t[1], "chunk_index", 0)))
     out: list[dict] = []

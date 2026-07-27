@@ -67,3 +67,23 @@ def test_rank_skips_chunks_without_a_vector():
                           [_chunk(0, "a", None), _chunk(1, "b", [1.0, 0.0])],
                           top_k=5)
     assert [h["ordinal"] for h in hits] == [1]
+
+
+def test_rank_skips_dimension_mismatched_vectors():
+    # Stale corpus: chunks embedded at a different dimension than the query
+    # (e.g. the embedding model changed and the docs were not reindexed). These
+    # must be skipped entirely so the caller falls back to full-text grounding,
+    # NOT returned as 0.0-score "hits" that masquerade as relevant passages.
+    query = [1.0, 0.0, 0.0]                       # dim 3
+    chunks = [_chunk(0, "a", [1.0, 0.0]), _chunk(1, "b", [0.5, 0.5])]  # dim 2
+    assert retrieval.rank(query, chunks, top_k=5) == []
+
+
+def test_rank_drops_non_positive_scores():
+    # An orthogonal (0.0) or all-zero query must not surface document-start
+    # filler as a hit — those chunks are dropped so the doc falls back.
+    query = [1.0, 0.0]
+    chunks = [_chunk(0, "orthogonal", [0.0, 1.0]),   # cosine 0.0 -> dropped
+              _chunk(1, "aligned", [1.0, 0.0])]      # cosine 1.0 -> kept
+    assert [h["ordinal"] for h in retrieval.rank(query, chunks, top_k=5)] == [1]
+    assert retrieval.rank([0.0, 0.0], chunks, top_k=5) == []  # zero query -> no hits
