@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, File, Form, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -26,8 +26,8 @@ from cam.common.http import gateway_client, gateway_headers, raise_for_error
 from cam.common.rbac import is_own_scoped
 from cam.common.security import Principal, make_auth_dependencies
 
-from . import vaf
-from .models import Base, Case, Document, DocumentTag
+from . import embedding, retrieval, vaf
+from .models import Base, Case, Document, DocumentChunk, DocumentTag
 
 settings = get_settings("document")
 engine = make_engine(settings.resolved_db_url())
@@ -214,6 +214,66 @@ def get_document_text(document_id: str,
         raise ApiError.conflict("document is quarantined and unusable", code="quarantined")
     extract = settings.extract_dir / f"{doc.id}.txt"
     return {"text": extract.read_text(encoding="utf-8") if extract.exists() else ""}
+
+
+class RetrieveRequest(BaseModel):
+    doc_ids: list[str] = Field(min_length=1, max_length=100)
+    query: str = ""
+    top_k: int = Field(default=6, ge=1, le=50)
+
+
+@app.post("/api/documents/retrieve")
+def retrieve(body: RetrieveRequest, principal: Principal = Depends(require("case:read"))):
+    """Large-document retrieval (RAG): the top-K most relevant chunks per
+    document for a query, so a section is grounded on relevant passages rather
+    than the first MAX_DOC_CHARS of full text. Service tokens (orchestration) or
+    any user with access to the case. Fail-open: if the query cannot be embedded
+    or a document has no chunks, that document returns no chunks and the caller
+    falls back to full-text grounding."""
+    query_vecs = embedding.embed_texts([body.query])
+    qv = query_vecs[0] if query_vecs else None
+    results: list[dict] = []
+    with SessionLocal() as db:
+        for doc_id in body.doc_ids:
+            doc = db.get(Document, doc_id)
+            if not doc:
+                results.append({"doc_id": doc_id, "chunks": [], "reason": "not_found"})
+                continue
+            _scoped_case(db, doc.case_id, principal)  # RBAC (raises 403 if unauthorised)
+            if doc.status == "quarantined":
+                results.append({"doc_id": doc_id, "chunks": [], "reason": "quarantined"})
+                continue
+            if qv is None:
+                results.append({"doc_id": doc_id, "chunks": [], "reason": "query_not_embedded"})
+                continue
+            chunks = db.scalars(select(DocumentChunk)
+                                .where(DocumentChunk.document_id == doc_id)).all()
+            hits = retrieval.rank(qv, chunks, body.top_k)
+            results.append({"doc_id": doc_id, "chunks": hits,
+                            "reason": "" if hits else "not_embedded"})
+    return {"results": results, "query_embedded": qv is not None}
+
+
+@app.post("/api/documents/{document_id}/reindex")
+def reindex_document(document_id: str,
+                     principal: Principal = Depends(require("docs:manage"))):
+    """(Re)chunk and embed a document on demand — for documents uploaded before
+    RAG was enabled, or to refresh vectors after an embedding-config change.
+    Idempotent (existing chunks are replaced)."""
+    with SessionLocal() as db:
+        doc = _scoped_document(db, document_id, principal)
+        if doc.status != "ready":
+            raise ApiError.conflict("document has no extractable text to index",
+                                    code="no_text")
+        extract = settings.extract_dir / f"{doc.id}.txt"
+        text = extract.read_text(encoding="utf-8") if extract.exists() else ""
+        n = vaf.embed_document_chunks(db, doc, text)
+        case_id = doc.case_id
+    if n:
+        audit.emit(settings, action="document.embedded", entity_type="document",
+                   entity_id=document_id, principal=principal, case_id=case_id,
+                   detail={"chunks": n, "chars": len(text), "reindex": True})
+    return {"document_id": document_id, "chunks": n, "embedded": bool(n)}
 
 
 @app.delete("/api/documents/{document_id}", status_code=204)

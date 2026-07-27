@@ -201,12 +201,46 @@ def _section_payload(run: Run, job: SectionJob) -> dict:
     from cam.common.placeholders import resolve_placeholders
     section_prompt, _ = resolve_placeholders(prompt_payload["prompt_text"], placeholders)
 
+    settings_snap = resolution.get("settings") or {}
+    rag_enabled = bool(settings_snap.get("rag_enabled"))
+    rag_top_k = int(settings_snap.get("rag_top_k", 6) or 6)
+
+    # Large-document retrieval (RAG): ground each mapped document on its most
+    # relevant passages for this section (query = the resolved section prompt)
+    # instead of the full extract. One call embeds the query once and ranks each
+    # document independently (no bleed, FR-D03). Fail-open per document: anything
+    # not retrieved falls back to full-text grounding, so a run never loses a
+    # source because retrieval was unavailable.
+    hits_by_doc: dict[str, list[dict]] = {}
+    if rag_enabled and job.input_docs:
+        retrieved = resolver.retrieve_chunks(
+            [ref["doc_id"] for ref in job.input_docs], section_prompt, rag_top_k)
+        for entry in (retrieved.get("results") or []):
+            hits_by_doc[entry.get("doc_id")] = entry.get("chunks") or []
+
     grounding = []
+    retrieval_prov: list[dict] = []
     for ref in job.input_docs:
-        # FR-D03: only THIS section's mapped documents are fetched — no bleed
-        text = resolver.fetch_document_text(ref["doc_id"])
-        grounding.append({"doctype_code": ref["doctype_code"], "label": ref["label"],
-                          "text": text})
+        # FR-D03: only THIS section's mapped documents are used — no bleed
+        chunks = hits_by_doc.get(ref["doc_id"])
+        if rag_enabled and chunks:
+            passages = "\n\n".join(
+                f"[passage {c.get('ordinal')}] {c.get('text', '')}" for c in chunks)
+            grounding.append({
+                "doctype_code": ref["doctype_code"],
+                "label": f"{ref['label']} · {len(chunks)} retrieved passage(s)",
+                "text": passages})
+            retrieval_prov.append({
+                "doc_id": ref["doc_id"], "label": ref["label"], "fallback": False,
+                "passages": [{"ordinal": c.get("ordinal"), "score": c.get("score")}
+                             for c in chunks]})
+        else:
+            text = resolver.fetch_document_text(ref["doc_id"])
+            grounding.append({"doctype_code": ref["doctype_code"], "label": ref["label"],
+                              "text": text})
+            if rag_enabled:
+                retrieval_prov.append({"doc_id": ref["doc_id"], "label": ref["label"],
+                                       "fallback": True, "passages": []})
 
     # External-intelligence grounding: fetched once per run and snapshotted in
     # resolution["connector_context"] (see create_run). Opted-in sections just
@@ -228,6 +262,9 @@ def _section_payload(run: Run, job: SectionJob) -> dict:
         "fixed_format": job.fixed_format,
         "length_guidance": job.length_guidance or None,
         "model_overrides": prompt_payload.get("model_overrides"),
+        # retrieval provenance (empty unless RAG is on) — surfaced in the trace;
+        # ignored by the genai payload models (extra fields).
+        "retrieval": retrieval_prov,
     }
 
 
@@ -282,6 +319,18 @@ def _run_agent_pipeline(run: Run, job: SectionJob) -> dict:
                  tokens_in, tokens_out)
         trace.append({"agent": agent, "model": resp.get("model", ""),
                       "tokens_in": tokens_in, "tokens_out": tokens_out, **extra})
+
+    # 0 — RETRIEVAL (RAG): record which passages grounded this section so the
+    # trace/audit shows exactly what the pipeline read (answers "why did it use
+    # that passage?"). No token cost — retrieval is embedding + cosine.
+    provenance = base.get("retrieval") or []
+    if provenance:
+        record("retrieval", {"usage": {}},
+               docs=len(provenance),
+               passages=sum(len(p.get("passages") or []) for p in provenance
+                            if not p.get("fallback")),
+               fallbacks=sum(1 for p in provenance if p.get("fallback")),
+               retrieval=provenance)
 
     # 1 — EXTRACTION AGENT (structured, source-attributed facts)
     extraction = resolver.genai_extract({

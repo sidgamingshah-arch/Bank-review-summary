@@ -123,18 +123,24 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
   `scripts/masters_bundle.py template|bulk-upload masters.xlsx`.
 - `GET /api/masters/settings` → `{tagging_confidence_threshold, tagging_mode,
   agents_materiality_enabled, agents_consistency_enabled, agent_revision_limit,
-  connectors_search_enabled, connectors_news_enabled, _llm:{provider, model, base_url,
-  max_tokens, api_key_env, api_key_configured}}` (`_llm` is a read-only view of the
-  effective LLM egress — no secret value) · `PUT /api/masters/settings` (business_admin;
-  whitelist — only the scalar/bool keys above, not `_llm`)
+  connectors_search_enabled, connectors_news_enabled, rag_enabled, rag_top_k,
+  _llm:{provider, model, base_url, max_tokens, api_key_env, api_key_configured,
+  embed_provider, embed_model, embed_base_url, embed_dim, embed_api_key_env,
+  embed_api_key_configured}}` (`_llm` is a read-only view of the effective LLM egress
+  — no secret value) · `PUT /api/masters/settings` (business_admin; whitelist — only the
+  scalar/bool keys above, not `_llm`). `rag_enabled` turns on large-document retrieval;
+  `rag_top_k` (1–50) is the passages fetched per document per section.
 - `GET /api/masters/llm-config` (`masters:read`) → the admin-set LLM overrides (only keys that
   were set; absent → the gateway's env default). `PUT /api/masters/llm-config` (business_admin)
   `{llm_provider?: mock|anthropic|openai, genai_model?, genai_base_url?, genai_temperature?,
-  genai_max_tokens?, genai_timeout_seconds?, genai_auth_scheme?, genai_api_key_env?}` → persists
-  the non-secret egress config and pushes a live reload to the gateway (no restart). The API key
+  genai_max_tokens?, genai_timeout_seconds?, genai_auth_scheme?, genai_api_key_env?,
+  genai_embed_provider?: mock|openai, genai_embed_model?, genai_embed_base_url?,
+  genai_embed_api_key_env?, genai_embed_dim?}` → persists the non-secret egress config
+  (chat AND embeddings) and pushes a live reload to the gateway (no restart). The API key
   VALUE is never accepted or stored (NFR-06) — set it in the env/vault var named by
-  `genai_api_key_env`. `base_url` required (http/https) when provider is `openai`. Audits
-  `settings.updated` (entity `llm_config`).
+  `genai_api_key_env` / `genai_embed_api_key_env`. `base_url` required (http/https) when
+  the respective provider is `openai`; `genai_embed_model` required for an openai embedder.
+  Audits `settings.updated` (entity `llm_config`).
 - `GET /api/masters/published/doctypes` → `[doctype payload]` (all currently-published doc types;
   used by tagging/document services — avoids N+1 version lookups)
 
@@ -203,7 +209,15 @@ extracts go to blob storage (`.data/blobs`, `.data/extracts`) — never the DB (
   (repository-pull stand-in; loads a fixture blob through the SAME pipeline — FR-C03)
 - `GET /api/cases/{id}/documents` → `[Document]`
 - `GET /api/documents/{id}` → `Document` · `GET /api/documents/{id}/text` (service or case-scoped user) → `{text}`
-- `DELETE /api/documents/{id}` → 204
+- `POST /api/documents/retrieve` (service or case-scoped user) `{doc_ids: [str], query, top_k?}`
+  → `{results: [{doc_id, chunks: [{ordinal, text, score, char_start, char_end}], reason}], query_embedded}`
+  — large-document retrieval (RAG): top-K most relevant chunks per document for the query.
+  Fail-open: a document with no chunks (or an unembeddable query) returns an empty `chunks` list
+  and the caller falls back to full-text grounding.
+- `POST /api/documents/{id}/reindex` (`docs:manage`) → `{document_id, chunks, embedded}` —
+  (re)chunk + embed a document on demand (idempotent), for documents uploaded before RAG was
+  enabled or after an embedding-config change. 409 `no_text` if the document has no extract.
+- `DELETE /api/documents/{id}` → 204 (cascades to tags and retrieval chunks)
 - `POST /api/documents/{id}/tags` `{doctype_code, period_label?, seq_order?, page_range?}` → `Tag`
 - `PATCH /api/documents/{id}/tags/{tag_id}` `{doctype_code?, period_label?, seq_order?, confirmed?: bool}` → `Tag`
 - `DELETE /api/documents/{id}/tags/{tag_id}` → 204
@@ -276,6 +290,12 @@ Run = {id, case_id, template_key, status: "queued"|"running"|"complete"|"partial
                    agent_trace: [{agent, model, tokens_in, tokens_out, ...}]}]}
 ```
 
+When large-document retrieval (RAG) is on, each section's `agent_trace` starts with a
+`retrieval` step: `{agent: "retrieval", tokens_in: 0, tokens_out: 0, docs, passages,
+fallbacks, retrieval: [{doc_id, label, fallback, passages: [{ordinal, score}]}]}` — the
+audit record of exactly which passages grounded the section (and which documents fell back
+to full text). It carries no token cost (retrieval is embedding + cosine, not generation).
+
 Every agent call is token-logged: the worker emits an `agent-tokens run=.. section=.. agent=..
 in=.. out=..` line per call, and the `run.section_completed` audit event carries a per-agent
 `token_usage: [{agent, model, tokens_in, tokens_out}]` breakdown (plus section `tokens_in/out`).
@@ -339,11 +359,15 @@ governed prompt-master entry for that role when published (reserved global keys
 - `POST /api/genai/edit`
   `{current_content, instruction, scope: "document"|"section", grounding_docs: [..],
     preferences: PreferenceProfileInput|null}` → `{proposed_content, rationale, model, usage}`
+- `POST /api/genai/embed` (service) `{texts: [str]}` → `{embeddings: [[float]], model, dim, usage}`
+  — the single embedding egress for large-document retrieval (RAG). The document service calls it
+  at intake (to index chunks) and at retrieval time (to embed the query). Unit vectors.
 - `GET /api/genai/config` (service) → the EFFECTIVE egress config `{provider, model, base_url,
-  max_tokens, temperature, timeout_seconds, auth_scheme, api_key_env, api_key_configured}` (env
-  defaults overlaid with the admin overrides; no key value). `POST /api/genai/reload` (service) →
-  re-reads the admin overrides from master-config and rebuilds the provider (called by
-  master-config on save; no restart).
+  max_tokens, temperature, timeout_seconds, auth_scheme, api_key_env, api_key_configured,
+  embed_provider, embed_model, embed_base_url, embed_dim, embed_api_key_env,
+  embed_api_key_configured}` (env defaults overlaid with the admin overrides; no key value).
+  `POST /api/genai/reload` (service) → re-reads the admin overrides from master-config and
+  rebuilds BOTH the chat provider and the embedder (called by master-config on save; no restart).
 - Providers (`CAM_LLM_PROVIDER`, model `CAM_GENAI_MODEL`, `CAM_GENAI_MAX_TOKENS`) — env defaults,
   overlaid at runtime by admin overrides from `PUT /api/masters/llm-config` (key always env-only):
   - `mock` (default) — deterministic, offline; echoes only figures present in the grounding.

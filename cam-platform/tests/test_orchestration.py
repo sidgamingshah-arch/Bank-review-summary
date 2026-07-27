@@ -116,6 +116,10 @@ def wired(monkeypatch):
     monkeypatch.setattr(resolver, "fetch_case", lambda c: CASE)
     monkeypatch.setattr(resolver, "fetch_case_documents", lambda c: DOCS)
     monkeypatch.setattr(resolver, "fetch_document_text", lambda d: FIN_TEXT)
+    # RAG off by default in these fixtures; provide a fake so a rag-enabled test
+    # still runs (empty results -> full-text fallback via fetch_document_text).
+    monkeypatch.setattr(resolver, "retrieve_chunks",
+                        lambda ids, q, k: {"results": [], "query_embedded": True})
     monkeypatch.setattr(resolver, "fetch_user_preferences", lambda h: PREFS)
     monkeypatch.setattr(resolver, "genai_generate", fake_genai)
     monkeypatch.setattr(resolver, "create_cam", fake_create_cam)

@@ -92,6 +92,12 @@ def _llm_info() -> dict:
         "max_tokens": settings.genai_max_tokens,
         "api_key_env": settings.genai_api_key_env,
         "api_key_configured": bool(os.environ.get(settings.genai_api_key_env)),
+        "embed_provider": settings.genai_embed_provider,
+        "embed_model": settings.genai_embed_model or None,
+        "embed_base_url": (settings.genai_embed_base_url or settings.genai_base_url) or None,
+        "embed_dim": settings.genai_embed_dim,
+        "embed_api_key_env": settings.genai_embed_api_key_env,
+        "embed_api_key_configured": bool(os.environ.get(settings.genai_embed_api_key_env)),
     }
 
 
@@ -110,6 +116,8 @@ class SettingsPatch(BaseModel):
     agent_revision_limit: int | None = Field(default=None, ge=0, le=3)
     connectors_search_enabled: bool | None = None
     connectors_news_enabled: bool | None = None
+    rag_enabled: bool | None = None
+    rag_top_k: int | None = Field(default=None, ge=1, le=50)
 
 
 @app.put("/api/masters/settings")
@@ -137,7 +145,9 @@ def put_settings(body: SettingsPatch, principal: Principal = Depends(require("ma
 # ---- editable LLM egress config (non-secret; the API key stays env/vault-only)
 LLM_CONFIG_KEYS = ("llm_provider", "genai_model", "genai_base_url", "genai_temperature",
                    "genai_max_tokens", "genai_timeout_seconds", "genai_auth_scheme",
-                   "genai_api_key_env")
+                   "genai_api_key_env",
+                   "genai_embed_provider", "genai_embed_model", "genai_embed_base_url",
+                   "genai_embed_api_key_env", "genai_embed_dim")
 
 
 def _reload_genai() -> None:
@@ -170,6 +180,13 @@ class LlmConfigPatch(BaseModel):
     genai_timeout_seconds: float | None = Field(default=None, ge=1, le=600)
     genai_auth_scheme: str | None = None
     genai_api_key_env: str | None = None
+    # embedding egress (RAG). The key itself is never accepted — only the NAME
+    # of the env var holding it (NFR-06), exactly like genai_api_key_env.
+    genai_embed_provider: Literal["mock", "openai"] | None = None
+    genai_embed_model: str | None = None
+    genai_embed_base_url: str | None = None
+    genai_embed_api_key_env: str | None = None
+    genai_embed_dim: int | None = Field(default=None, ge=16, le=8192)
 
 
 @app.put("/api/masters/llm-config")
@@ -187,6 +204,20 @@ def put_llm_config(body: LlmConfigPatch,
             raise ApiError.validation("genai_base_url is required when llm_provider is 'openai'")
         if updates.get("genai_base_url") and not base_url.lower().startswith(("http://", "https://")):
             raise ApiError.validation("genai_base_url must start with http:// or https://")
+        # embedding egress (RAG): an openai embedder needs a base URL (its own or
+        # the chat base_url it falls back to) and a model.
+        embed_base = str(merged.get("genai_embed_base_url") or "").strip() or base_url
+        if merged.get("genai_embed_provider") == "openai":
+            if not embed_base:
+                raise ApiError.validation(
+                    "genai_embed_base_url (or genai_base_url) is required when "
+                    "genai_embed_provider is 'openai'")
+            if not str(merged.get("genai_embed_model") or "").strip():
+                raise ApiError.validation(
+                    "genai_embed_model is required when genai_embed_provider is 'openai'")
+        if updates.get("genai_embed_base_url") and not str(
+                updates["genai_embed_base_url"]).lower().startswith(("http://", "https://")):
+            raise ApiError.validation("genai_embed_base_url must start with http:// or https://")
         before = {k: stored.get(k) for k in updates}
         for key, value in updates.items():
             row = db.get(Setting, key)

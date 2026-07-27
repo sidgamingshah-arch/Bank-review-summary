@@ -212,7 +212,15 @@ export function RunPage() {
                         <tbody>
                           {trace.map((t, i) => (
                             <tr key={i}>
-                              <td className="mono">{t.agent}</td>
+                              <td className="mono">
+                                {t.agent}
+                                {t.agent === 'retrieval' ? (
+                                  <span className="muted">
+                                    {' '}
+                                    ({t.passages ?? 0} passage(s){t.fallbacks ? `, ${t.fallbacks} full-text` : ''})
+                                  </span>
+                                ) : null}
+                              </td>
                               <td className="mono muted">{t.model || '—'}</td>
                               <td className="mono">{t.tokens_in}</td>
                               <td className="mono">{t.tokens_out}</td>
@@ -220,6 +228,21 @@ export function RunPage() {
                           ))}
                         </tbody>
                       </table>
+                      {trace
+                        .filter((t) => t.agent === 'retrieval' && (t.retrieval?.length ?? 0) > 0)
+                        .map((t, ti) => (
+                          <div className="hint retrieval-prov" key={ti}>
+                            <strong>Retrieved passages (RAG):</strong>{' '}
+                            {t.retrieval!.map((r) => (
+                              <span key={r.doc_id} className="retrieval-doc">
+                                <span className="mono">{r.label}</span>{' → '}
+                                {r.fallback
+                                  ? 'full text (not indexed)'
+                                  : `passages #${r.passages.map((p) => p.ordinal).join(', #')}`}
+                              </span>
+                            ))}
+                          </div>
+                        ))}
                     </td>
                   </tr>
                 ) : null}

@@ -12,6 +12,8 @@ interface Editable {
   agent_revision_limit: string;
   connectors_news_enabled: boolean;
   connectors_search_enabled: boolean;
+  rag_enabled: boolean;
+  rag_top_k: string;
 }
 
 interface LlmForm {
@@ -23,6 +25,10 @@ interface LlmForm {
   timeout_seconds: string;
   auth_scheme: string;
   api_key_env: string;
+  embed_provider: string;
+  embed_model: string;
+  embed_base_url: string;
+  embed_api_key_env: string;
 }
 
 function toForm(s: MasterSettings): Editable {
@@ -34,6 +40,8 @@ function toForm(s: MasterSettings): Editable {
     agent_revision_limit: String(s.agent_revision_limit ?? 1),
     connectors_news_enabled: s.connectors_news_enabled ?? false,
     connectors_search_enabled: s.connectors_search_enabled ?? false,
+    rag_enabled: s.rag_enabled ?? false,
+    rag_top_k: String(s.rag_top_k ?? 6),
   };
 }
 
@@ -47,6 +55,10 @@ function toLlmForm(l: LlmInfo): LlmForm {
     timeout_seconds: String(l.timeout_seconds ?? 120),
     auth_scheme: l.auth_scheme ?? 'Bearer',
     api_key_env: l.api_key_env ?? 'CAM_GENAI_API_KEY',
+    embed_provider: l.embed_provider ?? 'mock',
+    embed_model: l.embed_model ?? '',
+    embed_base_url: l.embed_base_url ?? '',
+    embed_api_key_env: l.embed_api_key_env ?? 'CAM_GENAI_API_KEY',
   };
 }
 
@@ -55,6 +67,7 @@ export function SettingsTab() {
   const [form, setForm] = useState<Editable | null>(null);
   const [llm, setLlm] = useState<LlmForm | null>(null);
   const [keyConfigured, setKeyConfigured] = useState(false);
+  const [embedKeyConfigured, setEmbedKeyConfigured] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingLlm, setSavingLlm] = useState(false);
 
@@ -63,6 +76,7 @@ export function SettingsTab() {
     if (s._llm) {
       setLlm(toLlmForm(s._llm));
       setKeyConfigured(Boolean(s._llm.api_key_configured));
+      setEmbedKeyConfigured(Boolean(s._llm.embed_api_key_configured));
     }
   };
 
@@ -101,6 +115,15 @@ export function SettingsTab() {
       toast.error('Agent revision limit must be an integer between 0 and 3');
       return;
     }
+    if (form.rag_top_k.trim() === '') {
+      toast.error('Retrieval passages (top-K) is required');
+      return;
+    }
+    const ragTopK = Number(form.rag_top_k);
+    if (!Number.isInteger(ragTopK) || ragTopK < 1 || ragTopK > 50) {
+      toast.error('Retrieval passages (top-K) must be an integer between 1 and 50');
+      return;
+    }
     setSaving(true);
     try {
       const updated = await api.put<MasterSettings>('/api/masters/settings', {
@@ -111,6 +134,8 @@ export function SettingsTab() {
         agent_revision_limit: revisionLimit,
         connectors_news_enabled: form.connectors_news_enabled,
         connectors_search_enabled: form.connectors_search_enabled,
+        rag_enabled: form.rag_enabled,
+        rag_top_k: ragTopK,
       });
       ingest(updated);
       toast.success('Settings saved');
@@ -142,6 +167,14 @@ export function SettingsTab() {
       toast.error('Base URL is required for the OpenAI-compatible provider');
       return;
     }
+    if (llm.embed_provider === 'openai' && !llm.embed_base_url.trim() && !llm.base_url.trim()) {
+      toast.error('Embedding base URL (or the chat base URL) is required for the OpenAI embedder');
+      return;
+    }
+    if (llm.embed_provider === 'openai' && !llm.embed_model.trim()) {
+      toast.error('Embedding model is required for the OpenAI embedder');
+      return;
+    }
     const body: LlmConfigInput = {
       llm_provider: llm.provider,
       genai_model: llm.model.trim() || null,
@@ -151,6 +184,10 @@ export function SettingsTab() {
       genai_timeout_seconds: timeout,
       genai_auth_scheme: llm.auth_scheme,
       genai_api_key_env: llm.api_key_env.trim() || null,
+      genai_embed_provider: llm.embed_provider,
+      genai_embed_model: llm.embed_model.trim() || null,
+      genai_embed_base_url: llm.embed_base_url.trim() || null,
+      genai_embed_api_key_env: llm.embed_api_key_env.trim() || null,
     };
     setSavingLlm(true);
     try {
@@ -262,6 +299,35 @@ export function SettingsTab() {
           no URL configured a clearly-marked mock feed is used. Off = document-only generation.
         </div>
 
+        <h3 className="settings-group">Large-document retrieval (RAG)</h3>
+        <div className="check-row">
+          <label className="check-pill">
+            <input
+              type="checkbox"
+              checked={form.rag_enabled}
+              onChange={(e) => set('rag_enabled', e.target.checked)}
+            />
+            Retrieve relevant passages
+          </label>
+          <div className="field" style={{ maxWidth: '12rem' }}>
+            <label>Passages per document (top-K)</label>
+            <input
+              className="input slim"
+              type="number"
+              min={1}
+              max={50}
+              step={1}
+              value={form.rag_top_k}
+              onChange={(e) => set('rag_top_k', e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="hint">
+          For long documents (e.g. 300-page annual reports), each section is grounded on the most
+          relevant retrieved passages instead of the first slice of full text. Requires an embedding
+          provider (configured below); documents are indexed at upload. Off = full-text grounding.
+        </div>
+
         <div className="actions-row">
           <button type="button" className="btn btn-primary" disabled={saving} onClick={save}>
             {saving ? 'Saving…' : 'Save settings'}
@@ -338,10 +404,59 @@ export function SettingsTab() {
             </div>
           </div>
 
+          <h3 className="settings-group">
+            Embedding endpoint (for RAG)
+            <span className={`chip ${embedKeyConfigured ? 'chip-green' : 'chip-amber'}`}>
+              key {embedKeyConfigured ? 'configured' : 'not set'}
+            </span>
+          </h3>
+          <div className="form-grid-2">
+            <div className="field">
+              <label>Embedding provider</label>
+              <select
+                className="select slim"
+                value={llm.embed_provider}
+                onChange={(e) => setL('embed_provider', e.target.value)}
+              >
+                <option value="mock">mock (offline, deterministic)</option>
+                <option value="openai">openai-compatible /embeddings</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Embedding model {llm.embed_provider === 'openai' ? '(required)' : ''}</label>
+              <input
+                className="input slim"
+                placeholder="text-embedding-3-small"
+                value={llm.embed_model}
+                onChange={(e) => setL('embed_model', e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="form-grid-2">
+            <div className="field">
+              <label>Embedding base URL</label>
+              <input
+                className="input slim"
+                placeholder="(defaults to the chat base URL)"
+                value={llm.embed_base_url}
+                onChange={(e) => setL('embed_base_url', e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label>Embedding API key env var</label>
+              <input
+                className="input slim mono"
+                value={llm.embed_api_key_env}
+                onChange={(e) => setL('embed_api_key_env', e.target.value)}
+              />
+            </div>
+          </div>
+
           <div className="hint">
             The API <strong>key value</strong> is never entered or stored here — set it in the
-            environment/vault variable named above (status shown top-right). Saving applies the
-            config to the gateway immediately, no restart required.
+            environment/vault variable named above (status shown top-right). The embedder can use a
+            different backend than chat (e.g. chat on Anthropic, embeddings on an OpenAI-compatible
+            endpoint). Saving applies the config to the gateway immediately, no restart required.
           </div>
 
           <div className="actions-row">

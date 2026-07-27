@@ -9,10 +9,11 @@ must see the reason) but the file content is never stored.
 from __future__ import annotations
 
 import hashlib
+import logging
 import mimetypes
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from cam.common import audit
@@ -21,8 +22,9 @@ from cam.common.db import new_id
 from cam.common.http import gateway_client, gateway_headers
 from cam.common.security import Principal
 
+from . import chunking, embedding
 from .extraction import extract_text
-from .models import Case, Document, DocumentTag
+from .models import Case, Document, DocumentChunk, DocumentTag
 
 settings = get_settings("document")
 
@@ -49,6 +51,55 @@ def classify_document(filename: str, text: str) -> dict | None:
             return resp.json()
     except Exception:
         return None
+
+
+def fetch_rag_enabled() -> bool:
+    """Whether large-document retrieval is on (master setting). Fail-open to the
+    deployment default so intake never breaks if master-config is unreachable
+    (monkeypatched in tests)."""
+    try:
+        with gateway_client(settings, timeout=10.0) as client:
+            resp = client.get("/api/masters/settings", headers=gateway_headers(settings))
+            if resp.status_code >= 400:
+                return settings.rag_enabled
+            return bool(resp.json().get("rag_enabled", settings.rag_enabled))
+    except Exception:
+        return settings.rag_enabled
+
+
+def embed_document_chunks(db: Session, doc: Document, text: str) -> int:
+    """Chunk + embed a document's text and (re)store its vectors, returning the
+    chunk count. Idempotent — existing chunks for the document are replaced.
+    Fail-open: on any error (or when embedding is unavailable) no chunks are
+    stored and 0 is returned, so intake proceeds and retrieval later falls back
+    to full-text grounding."""
+    try:
+        chunks = chunking.chunk_text(text, size=settings.rag_chunk_size,
+                                     overlap=settings.rag_chunk_overlap)
+        if len(chunks) > settings.rag_max_chunks:
+            logging.getLogger("cam.document").warning(
+                "document %s produced %d chunks; capping at %d (tail not indexed)",
+                doc.id, len(chunks), settings.rag_max_chunks)
+            chunks = chunks[: settings.rag_max_chunks]
+        if not chunks:
+            return 0
+        vectors = embedding.embed_texts([c["text"] for c in chunks])
+        if not vectors or len(vectors) != len(chunks):
+            return 0
+        db.execute(delete(DocumentChunk).where(DocumentChunk.document_id == doc.id))
+        db.add_all([
+            DocumentChunk(document_id=doc.id, chunk_index=c["ordinal"],
+                          char_start=c["char_start"], char_end=c["char_end"],
+                          text=c["text"], embedding=vectors[i],
+                          dim=len(vectors[i]) if isinstance(vectors[i], list) else 0)
+            for i, c in enumerate(chunks)])
+        db.commit()
+        return len(chunks)
+    except Exception:
+        logging.getLogger("cam.document").exception(
+            "chunk/embed failed for document %s; proceeding without vectors", doc.id)
+        db.rollback()
+        return 0
 
 
 def remove_stored_files(doc: Document) -> None:
@@ -118,7 +169,7 @@ def process_file(db: Session, *, case: Case, filename: str, content: bytes,
 
     (settings.blob_dir / f"{doc.id}{ext}").write_bytes(content)
 
-    text = extract_text(content, ext)
+    text = extract_text(content, ext, max_chars=settings.max_extract_chars)
     if text is None:
         doc.extraction, doc.status = "unsupported", "no_text"
     elif text.strip():
@@ -131,6 +182,17 @@ def process_file(db: Session, *, case: Case, filename: str, content: bytes,
 
     db.add(doc)
     db.commit()
+
+    # Large-document retrieval (RAG): chunk + embed the extract so each section
+    # can later be grounded on its most relevant passages, not just the first
+    # MAX_DOC_CHARS. Gated on the master toggle and fail-open, so a document-only
+    # deployment is completely unchanged.
+    if text and text.strip() and fetch_rag_enabled():
+        embedded = embed_document_chunks(db, doc, text)
+        if embedded:
+            audit.emit(settings, action="document.embedded", entity_type="document",
+                       entity_id=doc.id, principal=principal, case_id=case.id,
+                       detail={"chunks": embedded, "chars": len(text)})
 
     # Auto-tag (fail-open): filename still carries signal even when no text.
     result = classify_document(filename, text or "")

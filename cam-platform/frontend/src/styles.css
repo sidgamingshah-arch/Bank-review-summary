@@ -1336,6 +1336,19 @@ a:hover {
   font-weight: 600;
 }
 
+.retrieval-prov {
+  margin-top: 8px;
+  line-height: 1.6;
+}
+.retrieval-prov .retrieval-doc {
+  display: inline-block;
+  margin-right: 14px;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--line, #dce2ec);
+}
+
 .settings-group {
   margin: 18px 0 8px;
   font-size: 0.82rem;

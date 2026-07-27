@@ -20,7 +20,7 @@ from cam.common.security import Principal, make_auth_dependencies
 from . import agents
 from .assembly import (CLASSIFY_SYSTEM, build_classify_user, build_edit_user,
                        build_generate_user, build_system)
-from .providers import make_provider
+from .providers import make_embedder, make_provider
 from .trace import untraceable_numbers
 
 settings = get_settings("genai")
@@ -33,11 +33,14 @@ app = create_app(settings, "CAM genai-gateway")
 # from env, NFR-06). Overrides load lazily and are refreshed by /reload, which
 # master-config calls when an admin saves — so changes apply without a restart.
 _provider = None
+_embedder = None
 _overrides: dict | None = None
 
 _LLM_OVERRIDE_FIELDS = ("llm_provider", "genai_model", "genai_base_url", "genai_temperature",
                         "genai_max_tokens", "genai_timeout_seconds", "genai_auth_scheme",
-                        "genai_api_key_env")
+                        "genai_api_key_env",
+                        "genai_embed_provider", "genai_embed_model", "genai_embed_base_url",
+                        "genai_embed_api_key_env", "genai_embed_dim")
 
 
 def _load_overrides() -> dict:
@@ -69,13 +72,23 @@ def get_provider():
     return _provider
 
 
+def get_embedder():
+    """Embedding provider singleton (built lazily from the effective config,
+    independent of the chat provider — see providers.make_embedder)."""
+    global _embedder
+    if _embedder is None:
+        _embedder = make_embedder(_effective_settings())
+    return _embedder
+
+
 @app.post("/api/genai/reload")
 def reload_provider(principal: Principal = Depends(require_service)):
     """Re-read the admin LLM config and rebuild the provider (no restart).
     master-config calls this when the config is saved."""
-    global _provider, _overrides
+    global _provider, _embedder, _overrides
     _overrides = _load_overrides()
     _provider = None
+    _embedder = None  # embedding config is admin-overridable too — rebuild it
     eff = _effective_settings()
     return {"reloaded": True, "provider": eff.llm_provider, "model": eff.genai_model}
 
@@ -97,6 +110,13 @@ def config(principal: Principal = Depends(require_service)):
         "auth_scheme": eff.genai_auth_scheme,
         "api_key_env": eff.genai_api_key_env,
         "api_key_configured": bool(os.environ.get(eff.genai_api_key_env)),
+        # embedding egress (large-document retrieval / RAG)
+        "embed_provider": eff.genai_embed_provider,
+        "embed_model": eff.genai_embed_model or None,
+        "embed_base_url": (eff.genai_embed_base_url or eff.genai_base_url) or None,
+        "embed_dim": eff.genai_embed_dim,
+        "embed_api_key_env": eff.genai_embed_api_key_env,
+        "embed_api_key_configured": bool(os.environ.get(eff.genai_embed_api_key_env)),
     }
 
 
@@ -277,6 +297,20 @@ def classify(body: ClassifyRequest, principal: Principal = Depends(require_servi
         pass
     return {"code": code, "confidence": confidence if code else 0.0,
             "rationale": rationale, "model": result.model, "usage": result.usage}
+
+
+class EmbedRequest(BaseModel):
+    texts: list[str] = Field(min_length=1, max_length=4096)
+
+
+@app.post("/api/genai/embed")
+def embed(body: EmbedRequest, principal: Principal = Depends(require_service)):
+    """Embed one or more texts for large-document retrieval (RAG). Service-only
+    (NFR-10 single egress): the document service calls this at intake to index
+    chunks and at retrieval time to embed the query. Returns unit vectors."""
+    result = get_embedder().embed(body.texts)
+    return {"embeddings": result.vectors, "model": result.model,
+            "dim": result.dim, "usage": result.usage}
 
 
 @app.post("/api/genai/edit")

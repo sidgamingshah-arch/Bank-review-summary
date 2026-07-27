@@ -53,13 +53,15 @@ def _plain(content: bytes) -> str:
 _EXTRACTORS = {".pdf": _pdf, ".docx": _docx, ".xlsx": _xlsx, ".csv": _plain, ".txt": _plain}
 
 
-def extract_text(content: bytes, ext: str) -> str | None:
-    """Extracted text capped at ``MAX_EXTRACT_CHARS``; ``None`` when the format
-    is unsupported or the file cannot be parsed."""
+def extract_text(content: bytes, ext: str, max_chars: int = MAX_EXTRACT_CHARS) -> str | None:
+    """Extracted text capped at ``max_chars`` (default ``MAX_EXTRACT_CHARS``);
+    ``None`` when the format is unsupported or the file cannot be parsed. The
+    caller passes a larger cap for the RAG path so retrieval can reach content
+    deep in long documents (a 300+ page annual report)."""
     extractor = _EXTRACTORS.get((ext or "").lower())
     if extractor is None:
         return None
     try:
-        return extractor(content)[:MAX_EXTRACT_CHARS]
+        return extractor(content)[:max_chars]
     except Exception:
         return None

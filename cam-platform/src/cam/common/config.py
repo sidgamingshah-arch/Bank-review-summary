@@ -41,6 +41,30 @@ class Settings(BaseSettings):
     genai_temperature: float = 0.0
     genai_timeout_seconds: float = 120.0
 
+    # Embedding egress (for large-document retrieval / RAG). Kept independent of
+    # the chat provider because Anthropic has no embeddings API — so chat can run
+    # on anthropic while embeddings run on an OpenAI-compatible endpoint.
+    #   mock   -> deterministic offline hashing embedder (dev/tests/demo)
+    #   openai -> POST <base_url>/embeddings (OpenAI-compatible: OpenAI, Azure,
+    #             vLLM, LiteLLM, a bank-hosted embedder, ...)
+    # Base URL falls back to genai_base_url when empty; the API key is read from
+    # the named env var at construction and never stored/logged (NFR-06).
+    genai_embed_provider: str = "mock"  # mock | openai
+    genai_embed_model: str = ""  # e.g. text-embedding-3-small (required for openai)
+    genai_embed_base_url: str = ""  # empty -> reuse genai_base_url
+    genai_embed_api_key_env: str = "CAM_GENAI_API_KEY"  # env var NAME only, never the value
+    genai_embed_dim: int = 256  # mock vector dimension (live provider reports its own)
+
+    # Large-document retrieval (RAG). Off by default so runs behave exactly as
+    # before until an admin enables it. When on, document text is chunked and
+    # embedded at intake and each section is grounded on the top-K most relevant
+    # passages rather than the first MAX_DOC_CHARS of full text.
+    rag_enabled: bool = False
+    rag_top_k: int = 6
+    rag_chunk_size: int = 1200  # characters per chunk
+    rag_chunk_overlap: int = 200  # character overlap between adjacent chunks
+    rag_max_chunks: int = 4000  # per-document safety cap on chunk count
+
     # External grounding connectors (client-provided, integrated). The endpoint
     # URL is deployment config (here); the on/off toggle is a master setting
     # (business-admin controlled). Empty URL + toggle on -> deterministic mock.
@@ -52,6 +76,10 @@ class Settings(BaseSettings):
 
     # intake / generation guardrails
     max_upload_mb: int = 25
+    # Extracted-text cap (on-disk). Large enough for a 300+ page annual report
+    # (~900k chars) so retrieval can reach content deep in the document; the raw
+    # binary is still bounded by max_upload_mb.
+    max_extract_chars: int = 2_000_000
     worker_concurrency: int = 2
     max_active_runs_per_user: int = 2
 

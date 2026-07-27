@@ -98,6 +98,34 @@ grounding (sanitised for prompt-injection like any source), and the CAM's
 *Data Gaps & Disclosures* trailer lists every external source consulted. The
 fetch is fail-open: a connector outage never blocks or fails a run.
 
+## 4b. (Optional) Large documents — retrieval (RAG)
+
+For long documents — a 300-page annual report, say — enable retrieval so each
+section is grounded on the **most relevant passages** rather than the first slice
+of full text (which would miss the financials buried deep in the file).
+
+1. Configure an **embedding endpoint**. In *Masters → Settings → LLM endpoint →
+   Embedding endpoint*, set the provider to `openai-compatible`, give it an
+   embedding model (e.g. `text-embedding-3-small`) and, if different from chat,
+   a base URL; the key comes from the env var you name (never entered in the UI).
+   Embeddings are independent of chat, so chat can stay on Anthropic while
+   embeddings run on an OpenAI-compatible endpoint. Offline, `mock` works with no
+   network. (Env equivalents: `CAM_GENAI_EMBED_PROVIDER`, `CAM_GENAI_EMBED_MODEL`,
+   `CAM_GENAI_EMBED_BASE_URL`, `CAM_GENAI_EMBED_API_KEY_ENV`.)
+2. Turn on **Large-document retrieval (RAG)** in *Masters → Settings* and set
+   *passages per document (top-K)*.
+3. Upload documents **after** enabling RAG — they are chunked and embedded at
+   intake. For documents uploaded earlier, `POST /api/documents/{id}/reindex`
+   indexes them on demand.
+
+At generation time each section retrieves its top-K passages per mapped document;
+anything not retrieved falls back to full-text grounding, so a run never loses a
+source. The run trace's per-section **retrieval** step shows exactly which
+passages grounded each section. RAG is fail-open end-to-end: if the embedding
+endpoint is unavailable, generation degrades to full-text grounding. Also raise
+`CAM_MAX_EXTRACT_CHARS` (default ~2,000,000 ≈ 650 pages) if your documents are
+larger, so retrieval can reach the whole file.
+
 ## 5. Run a case
 
 In the UI (as an analyst): create a case, upload the borrower's documents (they
@@ -126,6 +154,11 @@ and use the conversational copilot.
 | `CAM_GENAI_API_KEY_ENV` / `CAM_GENAI_API_KEY` | env-var name holding the key / its value |
 | `CAM_GENAI_AUTH_SCHEME` | Authorization scheme (`Bearer`, or `""`) |
 | `CAM_GENAI_TEMPERATURE`, `CAM_GENAI_MAX_TOKENS`, `CAM_GENAI_TIMEOUT_SECONDS` | sampling / limits |
+| `CAM_GENAI_EMBED_PROVIDER` | `mock` \| `openai` (embedding backend, for RAG) |
+| `CAM_GENAI_EMBED_MODEL` / `CAM_GENAI_EMBED_BASE_URL` | embedding model id / base URL (empty → chat base URL) |
+| `CAM_GENAI_EMBED_API_KEY_ENV` | env-var name holding the embedding key (value never stored) |
+| `CAM_RAG_ENABLED`, `CAM_RAG_TOP_K` | retrieval defaults (also runtime settings) |
+| `CAM_RAG_CHUNK_SIZE`, `CAM_RAG_CHUNK_OVERLAP`, `CAM_MAX_EXTRACT_CHARS` | chunking / extract cap |
 | `CAM_CONNECTOR_NEWS_URL`, `CAM_CONNECTOR_SEARCH_URL` | connector endpoints |
 | `CAM_CONNECTOR_API_KEY_ENV` / `CAM_CONNECTOR_API_KEY` | connector key |
 | `CAM_JWT_SECRET` | token signing secret — set a real value for any live run |

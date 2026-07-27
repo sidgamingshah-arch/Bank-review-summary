@@ -88,4 +88,9 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # section only consults a connector when its prompt sets uses_external_context.
     "connectors_search_enabled": False,
     "connectors_news_enabled": False,
+    # large-document retrieval (RAG). Off by default so generation grounds on
+    # full document text exactly as before until an admin turns it on. When on,
+    # each section is grounded on the top-K most relevant retrieved passages.
+    "rag_enabled": False,
+    "rag_top_k": 6,
 }

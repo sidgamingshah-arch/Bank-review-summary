@@ -176,6 +176,13 @@ export interface LlmInfo {
   auth_scheme?: string;
   api_key_env: string;
   api_key_configured: boolean;
+  // embedding egress (large-document retrieval / RAG)
+  embed_provider?: string;
+  embed_model?: string | null;
+  embed_base_url?: string | null;
+  embed_dim?: number;
+  embed_api_key_env?: string;
+  embed_api_key_configured?: boolean;
 }
 
 // Editable, non-secret LLM config (PUT /api/masters/llm-config).
@@ -188,6 +195,12 @@ export interface LlmConfigInput {
   genai_timeout_seconds?: number | null;
   genai_auth_scheme?: string | null;
   genai_api_key_env?: string | null;
+  // embedding egress (never the key value — only the env var NAME)
+  genai_embed_provider?: string;
+  genai_embed_model?: string | null;
+  genai_embed_base_url?: string | null;
+  genai_embed_api_key_env?: string | null;
+  genai_embed_dim?: number | null;
 }
 
 export interface MasterSettings {
@@ -198,6 +211,8 @@ export interface MasterSettings {
   agent_revision_limit?: number;
   connectors_search_enabled?: boolean;
   connectors_news_enabled?: boolean;
+  rag_enabled?: boolean;
+  rag_top_k?: number;
   _llm?: LlmInfo;
   [key: string]: unknown;
 }
@@ -296,6 +311,18 @@ export interface AgentCheck {
   revisions?: number;
 }
 
+export interface RetrievalPassage {
+  ordinal: number;
+  score: number;
+}
+
+export interface RetrievalDocHit {
+  doc_id: string;
+  label: string;
+  fallback: boolean;
+  passages: RetrievalPassage[];
+}
+
 export interface AgentTraceStep {
   agent: string;
   model: string;
@@ -303,6 +330,11 @@ export interface AgentTraceStep {
   tokens_out: number;
   passed?: boolean | null;
   revision?: number;
+  // retrieval (RAG) step provenance
+  docs?: number;
+  passages?: number;
+  fallbacks?: number;
+  retrieval?: RetrievalDocHit[];
 }
 
 export interface RunSection {
@@ -499,6 +531,7 @@ export const AUDIT_ACTIONS: string[] = [
   'master.rejected', 'master.rolled_back', 'master.bundle_exported', 'master.bundle_imported',
   'master.bulk_uploaded', 'settings.updated', 'case.created',
   'document.uploaded', 'document.pulled', 'document.quarantined', 'document.deleted',
+  'document.embedded',
   'tag.auto_applied', 'tag.added', 'tag.changed', 'tag.removed', 'run.started',
   'run.section_completed', 'run.section_failed', 'run.section_retried',
   'run.section_regenerated', 'run.completed', 'cam.created', 'cam.section_edited',
