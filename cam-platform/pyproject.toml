@@ -25,6 +25,10 @@ dependencies = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.34"]
 postgres = ["psycopg[binary]>=3.1"]
+# Azure Blob Storage backend (CAM_BLOB_BACKEND=azure). Azure OpenAI + Azure AI
+# Search go over plain HTTPS (httpx) and need no extra package. azure-identity
+# is only needed for the account-URL / managed-identity auth path.
+azure = ["azure-storage-blob>=12.19", "azure-identity>=1.16"]
 dev = ["pytest>=8", "anthropic>=0.34"]
 
 [tool.hatch.build.targets.wheel]

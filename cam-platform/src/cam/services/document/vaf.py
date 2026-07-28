@@ -22,7 +22,7 @@ from cam.common.db import new_id
 from cam.common.http import gateway_client, gateway_headers
 from cam.common.security import Principal
 
-from . import chunking, embedding
+from . import azure_search, chunking, embedding, storage
 from .extraction import extract_text
 from .models import Case, Document, DocumentChunk, DocumentTag
 
@@ -53,26 +53,38 @@ def classify_document(filename: str, text: str) -> dict | None:
         return None
 
 
-def fetch_rag_enabled() -> bool:
-    """Whether large-document retrieval is on (master setting). Fail-open to the
-    deployment default so intake never breaks if master-config is unreachable
-    (monkeypatched in tests)."""
+def resolve_rag_mode(s: dict) -> str:
+    """Normalise the retrieval mode from a master-settings dict. rag_mode
+    (off|keyword|embedding) wins; the legacy boolean rag_enabled maps True ->
+    'embedding' for back-compat."""
+    mode = s.get("rag_mode")
+    if mode in ("off", "keyword", "embedding"):
+        return mode
+    return "embedding" if s.get("rag_enabled") else "off"
+
+
+def fetch_rag_mode() -> str:
+    """Current retrieval mode from master settings (off|keyword|embedding).
+    Fail-open to the deployment default so intake never breaks if master-config
+    is unreachable (monkeypatched in tests)."""
+    env_default = {"rag_mode": settings.rag_mode, "rag_enabled": settings.rag_enabled}
     try:
         with gateway_client(settings, timeout=10.0) as client:
             resp = client.get("/api/masters/settings", headers=gateway_headers(settings))
             if resp.status_code >= 400:
-                return settings.rag_enabled
-            return bool(resp.json().get("rag_enabled", settings.rag_enabled))
+                return resolve_rag_mode(env_default)
+            return resolve_rag_mode(resp.json())
     except Exception:
-        return settings.rag_enabled
+        return resolve_rag_mode(env_default)
 
 
-def embed_document_chunks(db: Session, doc: Document, text: str) -> int:
-    """Chunk + embed a document's text and (re)store its vectors, returning the
-    chunk count. Idempotent — existing chunks for the document are replaced.
-    Fail-open: on any error (or when embedding is unavailable) no chunks are
-    stored and 0 is returned, so intake proceeds and retrieval later falls back
-    to full-text grounding."""
+def index_document_chunks(db: Session, doc: Document, text: str, mode: str = "embedding") -> int:
+    """Chunk a document and (re)store it for retrieval, returning the chunk count.
+    mode 'embedding' stores vectors (via the embedding egress); mode 'keyword'
+    stores chunk text only (no embedding model needed). Idempotent — existing
+    chunks are replaced. Fail-open: on any error (or when embedding is
+    unavailable) nothing is stored and 0 is returned, so intake proceeds and
+    retrieval later falls back to full-text grounding."""
     try:
         chunks = chunking.chunk_text(text, size=settings.rag_chunk_size,
                                      overlap=settings.rag_chunk_overlap)
@@ -83,30 +95,40 @@ def embed_document_chunks(db: Session, doc: Document, text: str) -> int:
             chunks = chunks[: settings.rag_max_chunks]
         if not chunks:
             return 0
-        vectors = embedding.embed_texts([c["text"] for c in chunks])
-        if not vectors or len(vectors) != len(chunks):
-            return 0
+        vectors = None
+        if mode == "embedding":
+            vectors = embedding.embed_texts([c["text"] for c in chunks])
+            if not vectors or len(vectors) != len(chunks):
+                return 0  # embedding unavailable -> store nothing (fail-open)
+        # Managed Azure AI Search index: push chunks there instead of the local
+        # DocumentChunk table (keeps a single source of truth per backend).
+        if azure_search.enabled():
+            payload = [{"ordinal": c["ordinal"], "text": c["text"],
+                        "char_start": c["char_start"], "char_end": c["char_end"],
+                        **({"vector": vectors[i]} if vectors else {})}
+                       for i, c in enumerate(chunks)]
+            return azure_search.upsert_chunks(doc.id, doc.case_id, payload)
         db.execute(delete(DocumentChunk).where(DocumentChunk.document_id == doc.id))
-        db.add_all([
-            DocumentChunk(document_id=doc.id, chunk_index=c["ordinal"],
-                          char_start=c["char_start"], char_end=c["char_end"],
-                          text=c["text"], embedding=vectors[i],
-                          dim=len(vectors[i]) if isinstance(vectors[i], list) else 0)
-            for i, c in enumerate(chunks)])
+        rows = []
+        for i, c in enumerate(chunks):
+            vec = vectors[i] if vectors else None
+            rows.append(DocumentChunk(
+                document_id=doc.id, chunk_index=c["ordinal"],
+                char_start=c["char_start"], char_end=c["char_end"], text=c["text"],
+                embedding=vec, dim=len(vec) if isinstance(vec, list) else 0))
+        db.add_all(rows)
         db.commit()
-        return len(chunks)
+        return len(rows)
     except Exception:
         logging.getLogger("cam.document").exception(
-            "chunk/embed failed for document %s; proceeding without vectors", doc.id)
+            "chunk/index failed for document %s; proceeding without retrieval index", doc.id)
         db.rollback()
         return 0
 
 
 def remove_stored_files(doc: Document) -> None:
-    """Delete a document's blob and extract from disk (used by DELETE)."""
-    ext = Path(doc.filename).suffix.lower()
-    (settings.blob_dir / f"{doc.id}{ext}").unlink(missing_ok=True)
-    (settings.extract_dir / f"{doc.id}.txt").unlink(missing_ok=True)
+    """Delete a document's blob and extract from the store (used by DELETE)."""
+    storage.delete_doc(doc.id, Path(doc.filename).suffix.lower())
 
 
 def _validation_failure(ext: str, content: bytes) -> str | None:
@@ -167,7 +189,7 @@ def process_file(db: Session, *, case: Case, filename: str, content: bytes,
                    duplicate_of=earlier.id if earlier else None,
                    uploaded_by=principal.username)
 
-    (settings.blob_dir / f"{doc.id}{ext}").write_bytes(content)
+    storage.write_blob(doc.id, ext, content)
 
     text = extract_text(content, ext, max_chars=settings.max_extract_chars)
     if text is None:
@@ -178,21 +200,22 @@ def process_file(db: Session, *, case: Case, filename: str, content: bytes,
         # e.g. scanned/image-only PDF: no text layer (OCR is a documented v1 gap).
         doc.extraction, doc.status = "empty", "no_text"
     if text is not None:
-        (settings.extract_dir / f"{doc.id}.txt").write_text(text, encoding="utf-8")
+        storage.write_extract(doc.id, text)
 
     db.add(doc)
     db.commit()
 
-    # Large-document retrieval (RAG): chunk + embed the extract so each section
+    # Large-document retrieval (RAG): chunk + index the extract so each section
     # can later be grounded on its most relevant passages, not just the first
-    # MAX_DOC_CHARS. Gated on the master toggle and fail-open, so a document-only
-    # deployment is completely unchanged.
-    if text and text.strip() and fetch_rag_enabled():
-        embedded = embed_document_chunks(db, doc, text)
-        if embedded:
-            audit.emit(settings, action="document.embedded", entity_type="document",
+    # MAX_DOC_CHARS. Gated on the master retrieval mode and fail-open, so an
+    # off/document-only deployment is completely unchanged.
+    rag_mode = fetch_rag_mode()
+    if text and text.strip() and rag_mode != "off":
+        indexed = index_document_chunks(db, doc, text, rag_mode)
+        if indexed:
+            audit.emit(settings, action="document.indexed", entity_type="document",
                        entity_id=doc.id, principal=principal, case_id=case.id,
-                       detail={"chunks": embedded, "chars": len(text)})
+                       detail={"chunks": indexed, "mode": rag_mode, "chars": len(text)})
 
     # Auto-tag (fail-open): filename still carries signal even when no text.
     result = classify_document(filename, text or "")

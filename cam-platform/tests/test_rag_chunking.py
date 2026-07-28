@@ -87,3 +87,23 @@ def test_rank_drops_non_positive_scores():
               _chunk(1, "aligned", [1.0, 0.0])]      # cosine 1.0 -> kept
     assert [h["ordinal"] for h in retrieval.rank(query, chunks, top_k=5)] == [1]
     assert retrieval.rank([0.0, 0.0], chunks, top_k=5) == []  # zero query -> no hits
+
+
+# ---- keyword (lexical) ranking — no embedding model -----------------------
+
+def _kchunk(i, text):
+    return _chunk(i, text, None)  # keyword mode stores no vector
+
+
+def test_rank_keyword_prefers_query_term_matches():
+    chunks = [_kchunk(0, "governance and board composition matters"),
+              _kchunk(1, "cash flow from operations improved and liquidity is ample"),
+              _kchunk(2, "revenue rose strongly this fiscal year")]
+    hits = retrieval.rank_keyword("cash flow from operations", chunks, top_k=1)
+    assert len(hits) == 1 and "cash flow" in hits[0]["text"].lower()
+
+
+def test_rank_keyword_drops_non_matches_and_empty_query():
+    chunks = [_kchunk(0, "totally unrelated boilerplate text")]
+    assert retrieval.rank_keyword("cash flow", chunks, top_k=5) == []   # no overlap
+    assert retrieval.rank_keyword("", chunks, top_k=5) == []            # empty query

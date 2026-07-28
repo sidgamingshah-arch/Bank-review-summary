@@ -49,21 +49,51 @@ class Settings(BaseSettings):
     #             vLLM, LiteLLM, a bank-hosted embedder, ...)
     # Base URL falls back to genai_base_url when empty; the API key is read from
     # the named env var at construction and never stored/logged (NFR-06).
-    genai_embed_provider: str = "mock"  # mock | openai
-    genai_embed_model: str = ""  # e.g. text-embedding-3-small (required for openai)
+    genai_embed_provider: str = "mock"  # mock | openai | azure
+    genai_embed_model: str = ""  # embedding model id; for azure, the embed DEPLOYMENT name
     genai_embed_base_url: str = ""  # empty -> reuse genai_base_url
     genai_embed_api_key_env: str = "CAM_GENAI_API_KEY"  # env var NAME only, never the value
     genai_embed_dim: int = 256  # mock vector dimension (live provider reports its own)
 
     # Large-document retrieval (RAG). Off by default so runs behave exactly as
-    # before until an admin enables it. When on, document text is chunked and
-    # embedded at intake and each section is grounded on the top-K most relevant
-    # passages rather than the first MAX_DOC_CHARS of full text.
+    # before until an admin enables it. Retrieval mode is three-way:
+    #   off       -> full document text (no retrieval)
+    #   keyword   -> lexical/BM25 retrieval, NO embedding model needed
+    #   embedding -> semantic (vector / hybrid) retrieval via the embedder
+    # rag_enabled is kept for back-compat: True is read as "embedding" when
+    # rag_mode is unset.
+    rag_mode: str = "off"  # off | keyword | embedding
     rag_enabled: bool = False
     rag_top_k: int = 6
     rag_chunk_size: int = 1200  # characters per chunk
     rag_chunk_overlap: int = 200  # character overlap between adjacent chunks
     rag_max_chunks: int = 4000  # per-document safety cap on chunk count
+
+    # Retrieval index backend: local (DocumentChunk table + in-Python ranking) or
+    # a managed Azure AI Search index. Deployment-level, not a per-run setting.
+    retrieval_backend: str = "local"  # local | azure_search
+
+    # ---- Azure OpenAI (chat + embeddings + reasoning), used when
+    # llm_provider / genai_embed_provider == "azure". Deployment names reuse
+    # genai_model (chat) and genai_embed_model (embeddings). The key is read from
+    # the env var NAMED below; its value is never stored on Settings (NFR-06).
+    azure_openai_endpoint: str = ""  # e.g. https://my-res.openai.azure.com
+    azure_openai_api_version: str = "2024-10-21"
+    azure_openai_api_key_env: str = "AZURE_OPENAI_API_KEY"  # env var NAME only
+    azure_openai_reasoning: bool = False  # chat deployment is an o-series reasoning model
+
+    # ---- Azure AI Search (retrieval_backend == "azure_search")
+    azure_search_endpoint: str = ""  # e.g. https://my-res.search.windows.net
+    azure_search_api_version: str = "2024-07-01"
+    azure_search_api_key_env: str = "AZURE_SEARCH_API_KEY"  # env var NAME only
+    azure_search_index: str = "cam-chunks"
+
+    # ---- Azure Blob Storage (blob_backend == "azure"): binaries + text extracts
+    blob_backend: str = "local"  # local | azure
+    azure_blob_connection_env: str = "AZURE_BLOB_CONNECTION_STRING"  # env var NAME
+    azure_blob_account_url: str = ""  # alt to connection string (AAD/managed identity)
+    azure_blob_container_blobs: str = "cam-blobs"
+    azure_blob_container_extracts: str = "cam-extracts"
 
     # External grounding connectors (client-provided, integrated). The endpoint
     # URL is deployment config (here); the on/off toggle is a master setting

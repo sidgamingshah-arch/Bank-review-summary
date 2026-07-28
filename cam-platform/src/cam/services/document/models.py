@@ -114,7 +114,8 @@ class DocumentChunk(Base):
     char_start: Mapped[int] = mapped_column(Integer, default=0)
     char_end: Mapped[int] = mapped_column(Integer, default=0)
     text: Mapped[str] = mapped_column(Text)
-    embedding: Mapped[list] = mapped_column(JSON)  # list[float]
+    # list[float] for embedding mode; NULL for keyword mode (lexical, no vector)
+    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
     dim: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

@@ -89,8 +89,9 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "connectors_search_enabled": False,
     "connectors_news_enabled": False,
     # large-document retrieval (RAG). Off by default so generation grounds on
-    # full document text exactly as before until an admin turns it on. When on,
-    # each section is grounded on the top-K most relevant retrieved passages.
-    "rag_enabled": False,
+    # full document text exactly as before until an admin turns it on.
+    #   off | keyword (lexical, no embedding model) | embedding (semantic/hybrid)
+    "rag_mode": "off",
+    "rag_enabled": False,  # legacy alias; True is read as "embedding"
     "rag_top_k": 6,
 }

@@ -47,7 +47,7 @@ def _no_auto_tag(monkeypatch):
 
 @pytest.fixture()
 def rag_on(monkeypatch):
-    monkeypatch.setattr(vaf, "fetch_rag_enabled", lambda: True)
+    monkeypatch.setattr(vaf, "fetch_rag_mode", lambda: "embedding")
     monkeypatch.setattr(vaf.settings, "rag_chunk_size", 60)
     monkeypatch.setattr(vaf.settings, "rag_chunk_overlap", 15)
     monkeypatch.setattr(doc_embedding, "embed_texts", _fake_embed)
@@ -86,7 +86,7 @@ def test_intake_indexes_and_retrieve_ranks_relevant_passage(client, rag_on):
 def test_intake_stays_ready_when_embedding_unavailable(client, monkeypatch):
     # RAG on, but the embedding egress is down -> intake must still succeed and
     # simply store no chunks (retrieval later falls back to full text).
-    monkeypatch.setattr(vaf, "fetch_rag_enabled", lambda: True)
+    monkeypatch.setattr(vaf, "fetch_rag_mode", lambda: "embedding")
     monkeypatch.setattr(doc_embedding, "embed_texts", lambda texts: None)
     case = _make_case(client)
     up = _upload(client, case["id"], "r.txt", b"Some readable text with content.")
@@ -100,7 +100,7 @@ def test_intake_stays_ready_when_embedding_unavailable(client, monkeypatch):
 
 
 def test_no_embedding_when_rag_disabled(client, monkeypatch):
-    monkeypatch.setattr(vaf, "fetch_rag_enabled", lambda: False)
+    monkeypatch.setattr(vaf, "fetch_rag_mode", lambda: "off")
     calls = {"n": 0}
     monkeypatch.setattr(doc_embedding, "embed_texts",
                         lambda texts: calls.__setitem__("n", calls["n"] + 1) or [[0.0]])
@@ -115,7 +115,7 @@ def test_retrieve_stale_dimension_falls_back(client, monkeypatch):
     # DIFFERENT dimension (an embedding-model change without reindex). The
     # stale-dim chunks must not be returned as bogus hits — retrieve reports no
     # chunks so the caller falls back to full-text grounding.
-    monkeypatch.setattr(vaf, "fetch_rag_enabled", lambda: True)
+    monkeypatch.setattr(vaf, "fetch_rag_mode", lambda: "embedding")
     monkeypatch.setattr(vaf.settings, "rag_chunk_size", 60)
     monkeypatch.setattr(vaf.settings, "rag_chunk_overlap", 15)
     monkeypatch.setattr(doc_embedding, "embed_texts",
@@ -134,6 +134,30 @@ def test_retrieve_stale_dimension_falls_back(client, monkeypatch):
     assert r["results"][0]["reason"] == "not_embedded"  # -> full-text fallback
 
 
+def test_keyword_mode_indexes_and_retrieves_without_embedding(client, monkeypatch):
+    # 'keyword' mode: intake chunks + stores text (no vectors, no embed call);
+    # retrieve ranks lexically, also without embedding.
+    monkeypatch.setattr(vaf, "fetch_rag_mode", lambda: "keyword")
+    monkeypatch.setattr(vaf.settings, "rag_chunk_size", 60)
+    monkeypatch.setattr(vaf.settings, "rag_chunk_overlap", 15)
+    calls = {"embed": 0}
+    monkeypatch.setattr(doc_embedding, "embed_texts",
+                        lambda texts: calls.__setitem__("embed", calls["embed"] + 1) or _fake_embed(texts))
+    case = _make_case(client)
+    up = _upload(client, case["id"], "report.txt", DOC_BODY.encode())
+    assert up.status_code == 201
+    doc_id = up.json()["id"]
+    assert calls["embed"] == 0  # keyword intake never embeds
+
+    r = client.post("/api/documents/retrieve",
+                    json={"doc_ids": [doc_id], "query": "cash flow from operations",
+                          "top_k": 1, "mode": "keyword"}, headers=SERVICE).json()
+    assert calls["embed"] == 0  # keyword retrieve never embeds either
+    assert r["mode"] == "keyword"
+    hits = r["results"][0]["chunks"]
+    assert hits and "cash flow" in hits[0]["text"].lower()
+
+
 def test_retrieve_missing_document_is_reported_not_error(client, rag_on):
     r = client.post("/api/documents/retrieve",
                     json={"doc_ids": ["does-not-exist"], "query": "x", "top_k": 3},
@@ -145,7 +169,7 @@ def test_retrieve_missing_document_is_reported_not_error(client, rag_on):
 def test_reindex_embeds_on_demand(client, monkeypatch):
     # Uploaded while RAG was off (no chunks); an admin later enables RAG and
     # reindexes the document explicitly.
-    monkeypatch.setattr(vaf, "fetch_rag_enabled", lambda: False)
+    monkeypatch.setattr(vaf, "fetch_rag_mode", lambda: "off")
     monkeypatch.setattr(vaf.settings, "rag_chunk_size", 60)
     monkeypatch.setattr(vaf.settings, "rag_chunk_overlap", 15)
     monkeypatch.setattr(doc_embedding, "embed_texts", _fake_embed)

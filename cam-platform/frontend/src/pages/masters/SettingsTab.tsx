@@ -12,7 +12,7 @@ interface Editable {
   agent_revision_limit: string;
   connectors_news_enabled: boolean;
   connectors_search_enabled: boolean;
-  rag_enabled: boolean;
+  rag_mode: 'off' | 'keyword' | 'embedding';
   rag_top_k: string;
 }
 
@@ -29,6 +29,10 @@ interface LlmForm {
   embed_model: string;
   embed_base_url: string;
   embed_api_key_env: string;
+  azure_endpoint: string;
+  azure_api_version: string;
+  azure_reasoning: boolean;
+  azure_api_key_env: string;
 }
 
 function toForm(s: MasterSettings): Editable {
@@ -40,7 +44,7 @@ function toForm(s: MasterSettings): Editable {
     agent_revision_limit: String(s.agent_revision_limit ?? 1),
     connectors_news_enabled: s.connectors_news_enabled ?? false,
     connectors_search_enabled: s.connectors_search_enabled ?? false,
-    rag_enabled: s.rag_enabled ?? false,
+    rag_mode: (s.rag_mode as Editable['rag_mode']) ?? (s.rag_enabled ? 'embedding' : 'off'),
     rag_top_k: String(s.rag_top_k ?? 6),
   };
 }
@@ -59,6 +63,10 @@ function toLlmForm(l: LlmInfo): LlmForm {
     embed_model: l.embed_model ?? '',
     embed_base_url: l.embed_base_url ?? '',
     embed_api_key_env: l.embed_api_key_env ?? 'CAM_GENAI_API_KEY',
+    azure_endpoint: l.azure_endpoint ?? '',
+    azure_api_version: l.azure_api_version ?? '2024-10-21',
+    azure_reasoning: l.azure_reasoning ?? false,
+    azure_api_key_env: l.azure_api_key_env ?? 'AZURE_OPENAI_API_KEY',
   };
 }
 
@@ -68,6 +76,7 @@ export function SettingsTab() {
   const [llm, setLlm] = useState<LlmForm | null>(null);
   const [keyConfigured, setKeyConfigured] = useState(false);
   const [embedKeyConfigured, setEmbedKeyConfigured] = useState(false);
+  const [azureKeyConfigured, setAzureKeyConfigured] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingLlm, setSavingLlm] = useState(false);
 
@@ -77,6 +86,7 @@ export function SettingsTab() {
       setLlm(toLlmForm(s._llm));
       setKeyConfigured(Boolean(s._llm.api_key_configured));
       setEmbedKeyConfigured(Boolean(s._llm.embed_api_key_configured));
+      setAzureKeyConfigured(Boolean(s._llm.azure_api_key_configured));
     }
   };
 
@@ -134,7 +144,7 @@ export function SettingsTab() {
         agent_revision_limit: revisionLimit,
         connectors_news_enabled: form.connectors_news_enabled,
         connectors_search_enabled: form.connectors_search_enabled,
-        rag_enabled: form.rag_enabled,
+        rag_mode: form.rag_mode,
         rag_top_k: ragTopK,
       });
       ingest(updated);
@@ -175,6 +185,19 @@ export function SettingsTab() {
       toast.error('Embedding model is required for the OpenAI embedder');
       return;
     }
+    const usesAzure = llm.provider === 'azure' || llm.embed_provider === 'azure';
+    if (usesAzure && !llm.azure_endpoint.trim()) {
+      toast.error('Azure OpenAI endpoint is required when a provider is Azure');
+      return;
+    }
+    if (llm.provider === 'azure' && !llm.model.trim()) {
+      toast.error('Model (the Azure chat deployment name) is required for Azure chat');
+      return;
+    }
+    if (llm.embed_provider === 'azure' && !llm.embed_model.trim()) {
+      toast.error('Embedding model (the Azure embed deployment name) is required for Azure embeddings');
+      return;
+    }
     const body: LlmConfigInput = {
       llm_provider: llm.provider,
       genai_model: llm.model.trim() || null,
@@ -188,6 +211,10 @@ export function SettingsTab() {
       genai_embed_model: llm.embed_model.trim() || null,
       genai_embed_base_url: llm.embed_base_url.trim() || null,
       genai_embed_api_key_env: llm.embed_api_key_env.trim() || null,
+      azure_openai_endpoint: llm.azure_endpoint.trim() || null,
+      azure_openai_api_version: llm.azure_api_version.trim() || null,
+      azure_openai_api_key_env: llm.azure_api_key_env.trim() || null,
+      azure_openai_reasoning: llm.azure_reasoning,
     };
     setSavingLlm(true);
     try {
@@ -300,16 +327,20 @@ export function SettingsTab() {
         </div>
 
         <h3 className="settings-group">Large-document retrieval (RAG)</h3>
-        <div className="check-row">
-          <label className="check-pill">
-            <input
-              type="checkbox"
-              checked={form.rag_enabled}
-              onChange={(e) => set('rag_enabled', e.target.checked)}
-            />
-            Retrieve relevant passages
-          </label>
-          <div className="field" style={{ maxWidth: '12rem' }}>
+        <div className="form-grid-2">
+          <div className="field">
+            <label>Retrieval mode</label>
+            <select
+              className="select slim"
+              value={form.rag_mode}
+              onChange={(e) => set('rag_mode', e.target.value as Editable['rag_mode'])}
+            >
+              <option value="off">Off — full document text</option>
+              <option value="keyword">Keyword — lexical, no embedding model</option>
+              <option value="embedding">Embedding — semantic / hybrid</option>
+            </select>
+          </div>
+          <div className="field">
             <label>Passages per document (top-K)</label>
             <input
               className="input slim"
@@ -324,8 +355,10 @@ export function SettingsTab() {
         </div>
         <div className="hint">
           For long documents (e.g. 300-page annual reports), each section is grounded on the most
-          relevant retrieved passages instead of the first slice of full text. Requires an embedding
-          provider (configured below); documents are indexed at upload. Off = full-text grounding.
+          relevant retrieved passages instead of the first slice of full text.{' '}
+          <strong>Keyword</strong> ranks passages lexically (no embedding model needed);{' '}
+          <strong>Embedding</strong> uses semantic / hybrid retrieval (needs the embedding endpoint
+          configured below). Documents are indexed at upload. Off = full-text grounding.
         </div>
 
         <div className="actions-row">
@@ -355,10 +388,11 @@ export function SettingsTab() {
                 <option value="mock">mock (offline, deterministic)</option>
                 <option value="anthropic">anthropic (official SDK)</option>
                 <option value="openai">openai-compatible endpoint</option>
+                <option value="azure">azure openai</option>
               </select>
             </div>
             <div className="field">
-              <label>Model</label>
+              <label>Model {llm.provider === 'azure' ? '(chat deployment name)' : ''}</label>
               <input className="input slim" value={llm.model} onChange={(e) => setL('model', e.target.value)} />
             </div>
           </div>
@@ -420,10 +454,18 @@ export function SettingsTab() {
               >
                 <option value="mock">mock (offline, deterministic)</option>
                 <option value="openai">openai-compatible /embeddings</option>
+                <option value="azure">azure openai</option>
               </select>
             </div>
             <div className="field">
-              <label>Embedding model {llm.embed_provider === 'openai' ? '(required)' : ''}</label>
+              <label>
+                Embedding model{' '}
+                {llm.embed_provider === 'openai'
+                  ? '(required)'
+                  : llm.embed_provider === 'azure'
+                    ? '(embed deployment name)'
+                    : ''}
+              </label>
               <input
                 className="input slim"
                 placeholder="text-embedding-3-small"
@@ -452,11 +494,67 @@ export function SettingsTab() {
             </div>
           </div>
 
+          {llm.provider === 'azure' || llm.embed_provider === 'azure' ? (
+            <>
+              <h3 className="settings-group">
+                Azure OpenAI
+                <span className={`chip ${azureKeyConfigured ? 'chip-green' : 'chip-amber'}`}>
+                  key {azureKeyConfigured ? 'configured' : 'not set'}
+                </span>
+              </h3>
+              <div className="form-grid-2">
+                <div className="field">
+                  <label>Azure OpenAI endpoint</label>
+                  <input
+                    className="input slim"
+                    placeholder="https://my-res.openai.azure.com"
+                    value={llm.azure_endpoint}
+                    onChange={(e) => setL('azure_endpoint', e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label>API version</label>
+                  <input
+                    className="input slim mono"
+                    value={llm.azure_api_version}
+                    onChange={(e) => setL('azure_api_version', e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="form-grid-2">
+                <div className="field">
+                  <label>API key env var</label>
+                  <input
+                    className="input slim mono"
+                    value={llm.azure_api_key_env}
+                    onChange={(e) => setL('azure_api_key_env', e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label>Reasoning model (o-series)</label>
+                  <label className="check-pill" style={{ marginTop: 2 }}>
+                    <input
+                      type="checkbox"
+                      checked={llm.azure_reasoning}
+                      onChange={(e) => setL('azure_reasoning', e.target.checked)}
+                    />
+                    Chat deployment is a reasoning model
+                  </label>
+                </div>
+              </div>
+              <div className="hint">
+                Chat and embeddings share this endpoint; the model fields above are the Azure{' '}
+                <strong>deployment names</strong>. Reasoning (o-series) deployments use{' '}
+                <code>max_completion_tokens</code> and omit temperature.
+              </div>
+            </>
+          ) : null}
+
           <div className="hint">
             The API <strong>key value</strong> is never entered or stored here — set it in the
             environment/vault variable named above (status shown top-right). The embedder can use a
             different backend than chat (e.g. chat on Anthropic, embeddings on an OpenAI-compatible
-            endpoint). Saving applies the config to the gateway immediately, no restart required.
+            or Azure endpoint). Saving applies the config to the gateway immediately, no restart required.
           </div>
 
           <div className="actions-row">

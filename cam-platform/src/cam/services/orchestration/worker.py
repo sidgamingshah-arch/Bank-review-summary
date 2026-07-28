@@ -181,6 +181,15 @@ def _maybe_reap() -> None:
             log.exception("reaper sweep failed")
 
 
+def _resolve_rag_mode(settings_snap: dict) -> str:
+    """Retrieval mode from the run's settings snapshot: rag_mode
+    (off|keyword|embedding) wins; the legacy rag_enabled maps True -> embedding."""
+    mode = settings_snap.get("rag_mode")
+    if mode in ("off", "keyword", "embedding"):
+        return mode
+    return "embedding" if settings_snap.get("rag_enabled") else "off"
+
+
 def _section_payload(run: Run, job: SectionJob) -> dict:
     resolution = run.resolution
     section = next(s for s in resolution["sections"] if s["section_code"] == job.section_code)
@@ -202,19 +211,20 @@ def _section_payload(run: Run, job: SectionJob) -> dict:
     section_prompt, _ = resolve_placeholders(prompt_payload["prompt_text"], placeholders)
 
     settings_snap = resolution.get("settings") or {}
-    rag_enabled = bool(settings_snap.get("rag_enabled"))
+    rag_mode = _resolve_rag_mode(settings_snap)  # off | keyword | embedding
     rag_top_k = int(settings_snap.get("rag_top_k", 6) or 6)
 
     # Large-document retrieval (RAG): ground each mapped document on its most
     # relevant passages for this section (query = the resolved section prompt)
-    # instead of the full extract. One call embeds the query once and ranks each
+    # instead of the full extract. 'embedding' ranks by vector similarity,
+    # 'keyword' by lexical overlap (no embedding model). One call ranks each
     # document independently (no bleed, FR-D03). Fail-open per document: anything
     # not retrieved falls back to full-text grounding, so a run never loses a
     # source because retrieval was unavailable.
     hits_by_doc: dict[str, list[dict]] = {}
-    if rag_enabled and job.input_docs:
+    if rag_mode != "off" and job.input_docs:
         retrieved = resolver.retrieve_chunks(
-            [ref["doc_id"] for ref in job.input_docs], section_prompt, rag_top_k)
+            [ref["doc_id"] for ref in job.input_docs], section_prompt, rag_top_k, rag_mode)
         for entry in (retrieved.get("results") or []):
             hits_by_doc[entry.get("doc_id")] = entry.get("chunks") or []
 
@@ -223,7 +233,7 @@ def _section_payload(run: Run, job: SectionJob) -> dict:
     for ref in job.input_docs:
         # FR-D03: only THIS section's mapped documents are used — no bleed
         chunks = hits_by_doc.get(ref["doc_id"])
-        if rag_enabled and chunks:
+        if rag_mode != "off" and chunks:
             passages = "\n\n".join(
                 f"[passage {c.get('ordinal')}] {c.get('text', '')}" for c in chunks)
             grounding.append({
@@ -238,7 +248,7 @@ def _section_payload(run: Run, job: SectionJob) -> dict:
             text = resolver.fetch_document_text(ref["doc_id"])
             grounding.append({"doctype_code": ref["doctype_code"], "label": ref["label"],
                               "text": text})
-            if rag_enabled:
+            if rag_mode != "off":
                 retrieval_prov.append({"doc_id": ref["doc_id"], "label": ref["label"],
                                        "fallback": True, "passages": []})
 

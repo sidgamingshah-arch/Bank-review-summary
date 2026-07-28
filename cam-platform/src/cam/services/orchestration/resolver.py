@@ -42,16 +42,18 @@ def fetch_document_text(doc_id: str) -> str:
     return _get(f"/api/documents/{doc_id}/text", "document text").get("text", "")
 
 
-def retrieve_chunks(doc_ids: list[str], query: str, top_k: int) -> dict:
+def retrieve_chunks(doc_ids: list[str], query: str, top_k: int,
+                    mode: str = "embedding") -> dict:
     """Large-document retrieval (RAG): POST /api/documents/retrieve for the
-    top-K most relevant chunks per document. Fail-open — returns ``{}`` on any
+    top-K most relevant chunks per document. ``mode`` is 'embedding' (semantic)
+    or 'keyword' (lexical, no embedding model). Fail-open — returns ``{}`` on any
     error so the worker falls back to full-text grounding (monkeypatched in
-    tests). Uses a longer timeout because the query is embedded server-side."""
+    tests). Uses a longer timeout because the query may be embedded server-side."""
     try:
         with gateway_client(settings, timeout=120.0) as client:
             resp = client.post("/api/documents/retrieve",
                                json={"doc_ids": list(doc_ids), "query": query,
-                                     "top_k": top_k},
+                                     "top_k": top_k, "mode": mode},
                                headers=gateway_headers(settings))
             if resp.status_code >= 400:
                 return {}

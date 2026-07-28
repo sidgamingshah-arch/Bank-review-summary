@@ -123,19 +123,23 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
   `scripts/masters_bundle.py template|bulk-upload masters.xlsx`.
 - `GET /api/masters/settings` → `{tagging_confidence_threshold, tagging_mode,
   agents_materiality_enabled, agents_consistency_enabled, agent_revision_limit,
-  connectors_search_enabled, connectors_news_enabled, rag_enabled, rag_top_k,
+  connectors_search_enabled, connectors_news_enabled, rag_mode, rag_top_k,
   _llm:{provider, model, base_url, max_tokens, api_key_env, api_key_configured,
   embed_provider, embed_model, embed_base_url, embed_dim, embed_api_key_env,
   embed_api_key_configured}}` (`_llm` is a read-only view of the effective LLM egress
   — no secret value) · `PUT /api/masters/settings` (business_admin; whitelist — only the
-  scalar/bool keys above, not `_llm`). `rag_enabled` turns on large-document retrieval;
-  `rag_top_k` (1–50) is the passages fetched per document per section.
+  scalar/bool keys above, not `_llm`). `rag_mode` (off | keyword | embedding) selects
+  large-document retrieval — 'keyword' is lexical (no embedding model), 'embedding' is
+  semantic/hybrid; `rag_top_k` (1–50) is the passages fetched per document per section.
+  (The legacy boolean `rag_enabled` is still accepted and maps True → 'embedding'.)
 - `GET /api/masters/llm-config` (`masters:read`) → the admin-set LLM overrides (only keys that
   were set; absent → the gateway's env default). `PUT /api/masters/llm-config` (business_admin)
   `{llm_provider?: mock|anthropic|openai, genai_model?, genai_base_url?, genai_temperature?,
   genai_max_tokens?, genai_timeout_seconds?, genai_auth_scheme?, genai_api_key_env?,
-  genai_embed_provider?: mock|openai, genai_embed_model?, genai_embed_base_url?,
-  genai_embed_api_key_env?, genai_embed_dim?}` → persists the non-secret egress config
+  genai_embed_provider?: mock|openai|azure, genai_embed_model?, genai_embed_base_url?,
+  genai_embed_api_key_env?, genai_embed_dim?, azure_openai_endpoint?,
+  azure_openai_api_version?, azure_openai_api_key_env?, azure_openai_reasoning?}`
+  (llm_provider also accepts `azure`) → persists the non-secret egress config
   (chat AND embeddings) and pushes a live reload to the gateway (no restart). The API key
   VALUE is never accepted or stored (NFR-06) — set it in the env/vault var named by
   `genai_api_key_env` / `genai_embed_api_key_env`. `base_url` required (http/https) when
@@ -209,7 +213,7 @@ extracts go to blob storage (`.data/blobs`, `.data/extracts`) — never the DB (
   (repository-pull stand-in; loads a fixture blob through the SAME pipeline — FR-C03)
 - `GET /api/cases/{id}/documents` → `[Document]`
 - `GET /api/documents/{id}` → `Document` · `GET /api/documents/{id}/text` (service or case-scoped user) → `{text}`
-- `POST /api/documents/retrieve` (service or case-scoped user) `{doc_ids: [str], query, top_k?}`
+- `POST /api/documents/retrieve` (service or case-scoped user) `{doc_ids: [str], query, top_k?, mode?: embedding|keyword}`
   → `{results: [{doc_id, chunks: [{ordinal, text, score, char_start, char_end}], reason}], query_embedded}`
   — large-document retrieval (RAG): top-K most relevant chunks per document for the query.
   Fail-open: a document with no chunks (or an unembeddable query) returns an empty `chunks` list
@@ -378,6 +382,17 @@ governed prompt-master entry for that role when published (reserved global keys
     `CAM_GENAI_TEMPERATURE`, `CAM_GENAI_TIMEOUT_SECONDS`. Upstream/transport failures →
     `502 genai_upstream_error`; a content-filter stop → `502 model_refusal`. The key value is
     never stored on Settings and never logged (NFR-06).
+  - `azure` — Azure OpenAI. `CAM_AZURE_OPENAI_ENDPOINT` + deployment-scoped URLs +
+    `api-version` + `api-key` header; the chat/embed deployment names reuse
+    `CAM_GENAI_MODEL` / `CAM_GENAI_EMBED_MODEL`. `CAM_AZURE_OPENAI_REASONING=true` switches
+    o-series deployments to `max_completion_tokens` and drops temperature. Chat and
+    embeddings are independent (`CAM_GENAI_EMBED_PROVIDER=azure`), so either can run on Azure.
+  Backends (data-plane, not LLM egress): `CAM_RETRIEVAL_BACKEND` = `local` (DocumentChunk
+  table + in-Python ranking) | `azure_search` (managed Azure AI Search index, vector +
+  keyword/hybrid). `CAM_BLOB_BACKEND` = `local` (disk) | `azure` (Azure Blob Storage for
+  binaries + extracts). Both fail-open where safe and store only endpoint/index/container
+  names + key env-var names (NFR-06). `POST /api/genai/embed` still routes all embedding
+  egress through the gateway (NFR-10) even with the Azure Search backend.
   Provider/model identity is returned on every call. The provider is rebuilt when the admin
   saves new config (via `POST /api/genai/reload`) or lazily on first use after a restart. The
   API key is always read from the environment/vault (never the DB or the UI). See `docs/LIVE_RUN.md`.

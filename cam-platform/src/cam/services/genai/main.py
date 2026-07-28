@@ -40,7 +40,9 @@ _LLM_OVERRIDE_FIELDS = ("llm_provider", "genai_model", "genai_base_url", "genai_
                         "genai_max_tokens", "genai_timeout_seconds", "genai_auth_scheme",
                         "genai_api_key_env",
                         "genai_embed_provider", "genai_embed_model", "genai_embed_base_url",
-                        "genai_embed_api_key_env", "genai_embed_dim")
+                        "genai_embed_api_key_env", "genai_embed_dim",
+                        "azure_openai_endpoint", "azure_openai_api_version",
+                        "azure_openai_api_key_env", "azure_openai_reasoning")
 
 
 def _load_overrides() -> dict:
@@ -117,6 +119,12 @@ def config(principal: Principal = Depends(require_service)):
         "embed_dim": eff.genai_embed_dim,
         "embed_api_key_env": eff.genai_embed_api_key_env,
         "embed_api_key_configured": bool(os.environ.get(eff.genai_embed_api_key_env)),
+        # Azure OpenAI (chat/embeddings when provider == azure)
+        "azure_endpoint": eff.azure_openai_endpoint or None,
+        "azure_api_version": eff.azure_openai_api_version,
+        "azure_reasoning": eff.azure_openai_reasoning,
+        "azure_api_key_env": eff.azure_openai_api_key_env,
+        "azure_api_key_configured": bool(os.environ.get(eff.azure_openai_api_key_env)),
     }
 
 

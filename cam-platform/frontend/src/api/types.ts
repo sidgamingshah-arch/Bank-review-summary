@@ -183,6 +183,12 @@ export interface LlmInfo {
   embed_dim?: number;
   embed_api_key_env?: string;
   embed_api_key_configured?: boolean;
+  // Azure OpenAI (chat/embeddings when provider === 'azure')
+  azure_endpoint?: string | null;
+  azure_api_version?: string;
+  azure_reasoning?: boolean;
+  azure_api_key_env?: string;
+  azure_api_key_configured?: boolean;
 }
 
 // Editable, non-secret LLM config (PUT /api/masters/llm-config).
@@ -201,6 +207,11 @@ export interface LlmConfigInput {
   genai_embed_base_url?: string | null;
   genai_embed_api_key_env?: string | null;
   genai_embed_dim?: number | null;
+  // Azure OpenAI egress (key stays env/vault-only)
+  azure_openai_endpoint?: string | null;
+  azure_openai_api_version?: string | null;
+  azure_openai_api_key_env?: string | null;
+  azure_openai_reasoning?: boolean | null;
 }
 
 export interface MasterSettings {
@@ -211,6 +222,7 @@ export interface MasterSettings {
   agent_revision_limit?: number;
   connectors_search_enabled?: boolean;
   connectors_news_enabled?: boolean;
+  rag_mode?: 'off' | 'keyword' | 'embedding';
   rag_enabled?: boolean;
   rag_top_k?: number;
   _llm?: LlmInfo;
@@ -531,7 +543,7 @@ export const AUDIT_ACTIONS: string[] = [
   'master.rejected', 'master.rolled_back', 'master.bundle_exported', 'master.bundle_imported',
   'master.bulk_uploaded', 'settings.updated', 'case.created',
   'document.uploaded', 'document.pulled', 'document.quarantined', 'document.deleted',
-  'document.embedded',
+  'document.embedded', 'document.indexed',
   'tag.auto_applied', 'tag.added', 'tag.changed', 'tag.removed', 'run.started',
   'run.section_completed', 'run.section_failed', 'run.section_retried',
   'run.section_regenerated', 'run.completed', 'cam.created', 'cam.section_edited',

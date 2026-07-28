@@ -126,6 +126,35 @@ endpoint is unavailable, generation degrades to full-text grounding. Also raise
 `CAM_MAX_EXTRACT_CHARS` (default ~2,000,000 ≈ 650 pages) if your documents are
 larger, so retrieval can reach the whole file.
 
+## 4c. (Optional) Azure resources
+
+The platform runs fully on open-source/local defaults, but each piece can be
+pointed at Azure independently — config-gated, so mixing is fine.
+
+- **Azure OpenAI (chat + embeddings + reasoning).** Set `CAM_LLM_PROVIDER=azure`
+  and/or `CAM_GENAI_EMBED_PROVIDER=azure`, `CAM_AZURE_OPENAI_ENDPOINT`, and the
+  key in the env var named by `CAM_AZURE_OPENAI_API_KEY_ENV`. The chat/embedding
+  **deployment names** are `CAM_GENAI_MODEL` / `CAM_GENAI_EMBED_MODEL`. For an
+  o-series reasoning deployment set `CAM_AZURE_OPENAI_REASONING=true`. In the UI:
+  *Masters → Settings → LLM endpoint*, pick provider `azure` and fill the Azure
+  card (endpoint, api-version, deployment names, reasoning flag).
+- **Azure AI Search (retrieval index).** `CAM_RETRIEVAL_BACKEND=azure_search`,
+  `CAM_AZURE_SEARCH_ENDPOINT`, key env var, `CAM_AZURE_SEARCH_INDEX`. The index
+  is auto-created on first upsert; set `CAM_GENAI_EMBED_DIM` to your embedding
+  model's dimension (e.g. 1536 for text-embedding-3-small, 3072 for -large).
+  Chunks are pushed at intake and queried (vector / keyword / hybrid) per section.
+- **Azure Blob Storage (documents).** `CAM_BLOB_BACKEND=azure` +
+  `AZURE_BLOB_CONNECTION_STRING` (or `CAM_AZURE_BLOB_ACCOUNT_URL` for managed
+  identity). Install the extra: `pip install "cam-platform[azure]"`. Binaries and
+  text extracts move to the configured containers.
+
+Keys live only in env/vault (NFR-06) — the UI shows *configured / not set*, never
+values. Validate everything you enabled from inside your environment:
+
+```bash
+python scripts/azure_check.py   # probes only the Azure services you turned on
+```
+
 ## 5. Run a case
 
 In the UI (as an analyst): create a case, upload the borrower's documents (they
