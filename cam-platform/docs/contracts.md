@@ -123,6 +123,7 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
   `scripts/masters_bundle.py template|bulk-upload masters.xlsx`.
 - `GET /api/masters/settings` → `{tagging_confidence_threshold, tagging_mode,
   agents_materiality_enabled, agents_consistency_enabled, agent_revision_limit,
+  consistency_scope, worker_concurrency,
   connectors_search_enabled, connectors_news_enabled, rag_mode, rag_top_k,
   _llm:{provider, model, base_url, max_tokens, api_key_env, api_key_configured,
   embed_provider, embed_model, embed_base_url, embed_dim, embed_api_key_env,
@@ -132,6 +133,11 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
   large-document retrieval — 'keyword' is lexical (no embedding model), 'embedding' is
   semantic/hybrid; `rag_top_k` (1–50) is the passages fetched per document per section.
   (The legacy boolean `rag_enabled` is still accepted and maps True → 'embedding'.)
+  `consistency_scope` (per_section | post_generation, default post_generation) selects
+  WHEN the consistency-check agent runs — per section, or once memo-wide after every
+  section is drafted (re-drafting only the sections it flags). `worker_concurrency`
+  (1–64) is the number of sections drafted in parallel; it applies at runtime (clamped
+  to `CAM_WORKER_POOL_SIZE`, the pool spawned at startup) without a restart.
 - `GET /api/masters/llm-config` (`masters:read`) → the admin-set LLM overrides (only keys that
   were set; absent → the gateway's env default). `PUT /api/masters/llm-config` (business_admin)
   `{llm_provider?: mock|anthropic|openai, genai_model?, genai_base_url?, genai_temperature?,
@@ -306,12 +312,26 @@ in=.. out=..` line per call, and the `run.section_completed` audit event carries
 The tagging (`auto_tagging`) and copilot (`conversational_copilot`) agents log the same line.
 
 Worker: DB-backed queue (`SectionJob` rows, `SELECT ... FOR UPDATE SKIP LOCKED` semantics),
-in-process asyncio workers (`CAM_WORKER_CONCURRENCY`, default 2; set `CAM_WORKER_ENABLED=false`
-to disable the loop and drive `worker.drain()` synchronously, as the tests do). Per-user
-active-run cap `CAM_MAX_ACTIVE_RUNS_PER_USER` (default 2) → `429 rate_limited` (FR-D07).
-On run completion (all sections terminal): POST CAM to output service with every completed
-section + a **data-gap trailer** section (`section_code: "_gaps"`) listing missing inputs,
-untraceable figures, and any external connector sources consulted (FR-D05); then set `run.cam_id`.
+a fixed in-process asyncio worker pool spawned at `CAM_WORKER_POOL_SIZE` (default 8; set
+`CAM_WORKER_ENABLED=false` to disable the loop and drive `worker.drain()` synchronously, as
+the tests do). **Active** concurrency is the runtime `worker_concurrency` master setting
+(default 2), clamped to the pool size and applied within a few seconds without a restart —
+workers indexed at/above the active count idle. Per-user active-run cap
+`CAM_MAX_ACTIVE_RUNS_PER_USER` (default 2) → `429 rate_limited` (FR-D07).
+
+Section interlinking (FR-D08): a template section may declare `depends_on: [codes]`
+(or `depends_on_all: true`, the executive-summary case). A section job is not claimed until
+its dependency sections are terminal, and each completed dependency's drafted OUTPUT is injected
+as grounding for the dependent section — so an exec summary displayed first can be generated
+last, consuming every other section. The dependency graph is validated acyclic at template save.
+
+On run completion (all sections terminal): if `consistency_scope=post_generation` and ≥2
+sections completed, first enqueue a single **reconcile** phase (`kind="reconcile"`) that runs
+one cross-section consistency pass and re-drafts only the sections it flags (crash-recoverable
+via the same lease/reaper; fail-open — a failed reconcile still finalises). Then POST the CAM to
+the output service with every completed section + a **data-gap trailer** section
+(`section_code: "_gaps"`) listing missing inputs, untraceable figures, and any external
+connector sources consulted (FR-D05); then set `run.cam_id`.
 
 External connectors (client-provided, integrated): when a section's prompt sets
 `uses_external_context` **and** the matching toggle is on in settings
@@ -328,8 +348,10 @@ off by default → document-only generation, identical to before.
 
 The agentic pipeline's model roles. Orchestration conducts them per section:
 **extract → generate (summarise) → materiality → consistency**, with bounded
-revision loops (see §5 and ADR-0006). Each role's system prompt extends with the
-governed prompt-master entry for that role when published (reserved global keys
+revision loops (see §5 and ADR-0006). When `consistency_scope=post_generation`
+(default) the per-section consistency step is deferred to a single memo-level
+**reconcile** pass after every section is drafted. Each role's system prompt extends
+with the governed prompt-master entry for that role when published (reserved global keys
 `agent_extraction_rules`, `agent_summarisation_rules`, `agent_materiality_rules`,
 `agent_consistency_rules`).
 
@@ -341,7 +363,12 @@ governed prompt-master entry for that role when published (reserved global keys
   — MATERIALITY CHECK AGENT (`passed: null` = unusable model reply; never invented).
 - `POST /api/genai/consistency` `{draft, facts, context, other_sections: {code:
   [figures]}, agent_rules?}` → `{passed: bool|null, inconsistencies: [], notes, model,
-  usage}` — CONSISTENCY CHECK AGENT (facts + cross-section figures).
+  usage}` — CONSISTENCY CHECK AGENT (facts + cross-section figures; per_section scope).
+- `POST /api/genai/reconcile` `{sections: [{section_code, name, content, figures}],
+  agent_rules?}` → `{sections: [{section_code, consistent, issues, guidance}], parse_ok,
+  notes, model, usage}` — CROSS-SECTION RECONCILIATION AGENT (post_generation scope): sees
+  every drafted section together and flags which to re-draft. Fail-open: an omitted or
+  unparseable verdict defaults to consistent (no spurious rewrite).
 - `POST /api/genai/generate` — SUMMARISATION AGENT; body additionally accepts
   `extracted_facts` (primary grounding), `feedback: {omissions?, inconsistencies?}`
   (revision loop input) and `agent_rules`.

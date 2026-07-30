@@ -133,6 +133,9 @@ services:
     environment:
       <<: *service-env
       SERVICE_MODULE: cam.services.orchestration.main:app
+      # pool spawned at startup (concurrency ceiling); live concurrency is the
+      # runtime 'worker_concurrency' master setting, clamped to this.
+      CAM_WORKER_POOL_SIZE: "8"
       CAM_WORKER_CONCURRENCY: "2"
 
   genai:

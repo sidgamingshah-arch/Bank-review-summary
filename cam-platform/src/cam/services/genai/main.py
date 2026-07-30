@@ -264,6 +264,49 @@ def consistency(body: ConsistencyRequest, principal: Principal = Depends(require
             "model": result.model, "usage": result.usage}
 
 
+class ReconcileSection(BaseModel):
+    section_code: str
+    name: str = ""
+    content: str = ""
+    figures: list[str] = []
+
+
+class ReconcileRequest(BaseModel):
+    sections: list[ReconcileSection] = Field(min_length=1)
+    agent_rules: str | None = None
+
+
+@app.post("/api/genai/reconcile")
+def reconcile(body: ReconcileRequest, principal: Principal = Depends(require_service)):
+    """CROSS-SECTION RECONCILIATION AGENT: sees every drafted section together and
+    returns, per section, whether it must be revised for cross-section consistency
+    and guidance on how. Unparseable/short replies fail open to all-consistent so a
+    bad reply never forces a spurious rewrite."""
+    request = body.model_dump()
+    system = agents.role_system(agents.RECONCILE_SYSTEM, request.get("agent_rules"))
+    user = agents.build_reconcile_user(request["sections"])
+    result = get_provider().reconcile(request, system, user)
+    parsed = agents.parse_agent_json(result.content, "sections")
+    verdicts_in = (parsed or {}).get("sections") if parsed else None
+    codes = {s["section_code"] for s in request["sections"]}
+    by_code: dict[str, dict] = {}
+    for v in (verdicts_in or []):
+        if isinstance(v, dict) and v.get("section_code") in codes:
+            by_code[v["section_code"]] = {
+                "section_code": v["section_code"],
+                # fail-open: a section absent/mis-shaped in the reply is consistent
+                "consistent": bool(v.get("consistent", True)),
+                "issues": [str(i) for i in (v.get("issues") or [])][:20],
+                "guidance": str(v.get("guidance", ""))[:600]}
+    # every input section gets a verdict; ones the model omitted default consistent
+    sections_out = [by_code.get(code, {"section_code": code, "consistent": True,
+                                       "issues": [], "guidance": ""})
+                    for code in (s["section_code"] for s in request["sections"])]
+    return {"sections": sections_out, "parse_ok": parsed is not None,
+            "notes": str((parsed or {}).get("notes", ""))[:300],
+            "model": result.model, "usage": result.usage}
+
+
 class ClassifyDoctype(BaseModel):
     code: str
     name: str = ""

@@ -236,6 +236,14 @@ class MockProvider:
         return GenResult(content=content, model=self.model,
                          usage=_estimate_usage(system, user, content))
 
+    def reconcile(self, request: dict, system: str, user: str) -> GenResult:
+        import json
+
+        from . import agents
+        content = json.dumps(agents.mock_reconcile(request))
+        return GenResult(content=content, model=self.model,
+                         usage=_estimate_usage(system, user, content))
+
 
 # ----------------------------------------------------------------- anthropic
 
@@ -301,6 +309,9 @@ class AnthropicProvider:
         return self._call(request, system, user)
 
     def consistency(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
+
+    def reconcile(self, request: dict, system: str, user: str) -> GenResult:
         return self._call(request, system, user)
 
 
@@ -413,6 +424,9 @@ class OpenAICompatibleProvider:
         return self._call(request, system, user)
 
     def consistency(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
+
+    def reconcile(self, request: dict, system: str, user: str) -> GenResult:
         return self._call(request, system, user)
 
 

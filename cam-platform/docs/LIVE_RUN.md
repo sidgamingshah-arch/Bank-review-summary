@@ -155,6 +155,32 @@ values. Validate everything you enabled from inside your environment:
 python scripts/azure_check.py   # probes only the Azure services you turned on
 ```
 
+## 4d. (Optional) Generation tuning — concurrency, consistency, interlinking
+
+Three runtime levers in *Masters → Settings* (no restart needed):
+
+- **Concurrency (sections drafted in parallel).** *Generation performance →
+  Concurrency* sets how many sections generate at once — the biggest lever on how
+  fast a memo completes. It is clamped to the worker pool spawned at deployment
+  (`CAM_WORKER_POOL_SIZE`, default 8); raise the pool to allow higher live
+  concurrency. Higher = faster, but more concurrent load on your LLM endpoint —
+  keep it under the endpoint's rate/concurrency limit.
+- **When the consistency agent runs** (`consistency_scope`). *Assurance agents →
+  When the consistency agent runs*:
+  - **After all sections** (default) — one memo-level pass sees every section
+    together once they're all drafted and re-drafts **only** the sections it flags
+    (bounded by the revision limit). Best cross-section coherence; adds one
+    reconcile pass per run. Fail-open: a reconcile error still finalises the memo.
+  - **Per section** — checked as each section is written (sees only the siblings
+    finished so far). Lower latency, no extra pass.
+- **Section interlinking** (`depends_on` / `depends_on_all`). Declare, per template
+  section, which other sections' output feeds it (they finish first and their
+  drafted text is added to its grounding). The classic case is an **executive
+  summary** that `depends_on_all` — displayed first but generated last, consuming
+  every other section. Set it in the bulk template's `template_sections` sheet
+  (`depends_on` = pipe-separated section codes, `depends_on_all` = TRUE) or the JSON
+  bundle. The dependency graph must be acyclic (rejected at save otherwise).
+
 ## 5. Run a case
 
 In the UI (as an analyst): create a case, upload the borrower's documents (they

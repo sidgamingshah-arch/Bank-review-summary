@@ -110,7 +110,14 @@ class Settings(BaseSettings):
     # (~900k chars) so retrieval can reach content deep in the document; the raw
     # binary is still bounded by max_upload_mb.
     max_extract_chars: int = 2_000_000
+    # Generation worker pool. worker_pool_size is the number of worker tasks
+    # spawned at startup — the HARD CEILING on concurrent sections (infra sizing,
+    # changing it needs a restart). worker_concurrency is the DEFAULT active
+    # concurrency; the live value is an admin master setting ("worker_concurrency")
+    # clamped to [1, pool_size] and applied without a restart (idle workers above
+    # the active count). Back-compat: CAM_WORKER_CONCURRENCY still seeds both.
     worker_concurrency: int = 2
+    worker_pool_size: int = 8
     max_active_runs_per_user: int = 2
 
     def resolved_db_url(self) -> str:

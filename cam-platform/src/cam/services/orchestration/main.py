@@ -44,7 +44,12 @@ async def startup() -> None:
     if WORKER_ENABLED:
         global _stop_event
         _stop_event = asyncio.Event()
-        for i in range(settings.worker_concurrency):
+        # Spawn the pool at its ceiling; the live 'worker_concurrency' master
+        # setting gates how many are ACTIVE at a time (see worker._active_concurrency),
+        # so concurrency is tunable at runtime without a restart.
+        pool = max(settings.worker_pool_size, settings.worker_concurrency, 1)
+        worker._pool_size = pool
+        for i in range(pool):
             _worker_tasks.append(asyncio.create_task(worker.worker_loop(_stop_event, i)))
 
 
@@ -173,6 +178,7 @@ def create_run(body: RunCreate, request: Request,
                   resolution=resolution, gaps=gaps, proceed_with_gaps=body.proceed_with_gaps)
         db.add(run)
         db.flush()  # populate run.id before the section rows reference it
+        all_codes = [s["section_code"] for s in resolved["sections"]]
         sections = []
         for s in resolved["sections"]:
             include_if = s.get("include_if_doctype")
@@ -180,13 +186,20 @@ def create_run(body: RunCreate, request: Request,
             input_docs = []
             for code in s["prompt"]["payload"].get("source_doc_types", []):
                 input_docs += tags.get(code, [])
+            # section interlinking (FR-D08): depends_on_all -> every other section
+            # (the exec-summary case); otherwise the explicit, valid depends_on set
+            if s.get("depends_on_all"):
+                deps = [c for c in all_codes if c != s["section_code"]]
+            else:
+                deps = [c for c in (s.get("depends_on") or [])
+                        if c in all_codes and c != s["section_code"]]
             job = SectionJob(
                 run_id=run.id, section_code=s["section_code"],
                 name=s["prompt"]["payload"].get("section_name", s["section_code"]),
                 order_no=s["order"], prompt_version=s["prompt"]["version"],
                 fixed_format=bool(s.get("fixed_format")),
                 length_guidance=s.get("length_guidance") or "",
-                input_docs=input_docs,
+                input_docs=input_docs, depends_on=deps,
                 status="skipped" if skipped else "queued",
                 skip_reason=(f"conditional section: no '{include_if}' document on the case"
                              if skipped else None))
@@ -222,12 +235,15 @@ def usage_summary(principal: Principal = Depends(require("audit:read"))):
     with SessionLocal() as db:
         runs = db.scalar(select(func.count()).select_from(Run)) or 0
         jobs = list(db.scalars(select(SectionJob)).all())
-    return {"runs": runs, "sections": len(jobs),
+    # the memo-level reconcile phase is not a section; its token cost is real and
+    # still counted, but it is excluded from the section / failure tallies
+    section_jobs = [j for j in jobs if j.kind != "reconcile"]
+    return {"runs": runs, "sections": len(section_jobs),
             "tokens_in": sum(j.tokens_in for j in jobs),
             "tokens_out": sum(j.tokens_out for j in jobs),
             "retries": sum(max(0, j.attempts - 1) for j in jobs if j.kind == "initial"),
             "regenerations": sum(1 for j in jobs if j.kind == "regeneration"),
-            "failed_sections": sum(1 for j in jobs if j.status == "failed")}
+            "failed_sections": sum(1 for j in section_jobs if j.status == "failed")}
 
 
 @app.get("/api/runs")

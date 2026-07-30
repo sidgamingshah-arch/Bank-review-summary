@@ -44,6 +44,12 @@ class TemplateSection(BaseModel):
     include_if_doctype: str | None = None
     length_guidance: str = ""
     fixed_format: bool = False
+    # Section interlinking (FR-D08): section codes whose generated output is fed
+    # in as grounding for this section, and which must finish before it starts.
+    # depends_on_all is the executive-summary case: depend on every other section
+    # (so it is drafted last, consuming the whole memo). Cycles are rejected.
+    depends_on: list[str] = []
+    depends_on_all: bool = False
 
 
 class TemplatePayload(BaseModel):
@@ -120,6 +126,39 @@ AGENT_RULE_KEYS = {
 GLOBAL_PROMPT_KEYS = {GLOBAL_PROMPT_KEY, *AGENT_RULE_KEYS.values()}
 
 
+def _resolved_deps(section, code_set: set[str]) -> set[str]:
+    """A section's effective dependency set: depends_on_all expands to every
+    other section; otherwise the explicit (valid) depends_on codes."""
+    if section.depends_on_all:
+        return code_set - {section.section_code}
+    return {d for d in section.depends_on if d in code_set and d != section.section_code}
+
+
+def _dependency_cycle_errors(sections, code_set: set[str]) -> list[str]:
+    """Reject a section dependency graph that is not a DAG (FR-D08): a cycle
+    would deadlock the generation queue. Depends_on_all is included in the graph
+    so exec-summary-style 'depend on everything' is validated too."""
+    graph = {s.section_code: _resolved_deps(s, code_set) for s in sections}
+    # WHITE=unvisited, GREY=on the current DFS stack, BLACK=done
+    state: dict[str, int] = {}
+
+    def visit(node: str) -> bool:
+        state[node] = 1  # grey
+        for dep in graph.get(node, ()):  # noqa: SIM110
+            if state.get(dep, 0) == 1:
+                return True  # back-edge -> cycle
+            if state.get(dep, 0) == 0 and visit(dep):
+                return True
+        state[node] = 2  # black
+        return False
+
+    for code in graph:
+        if state.get(code, 0) == 0 and visit(code):
+            return ["sections: dependency cycle detected in depends_on "
+                    "(the section graph must be acyclic)"]
+    return []
+
+
 def validate_payload(mtype: str, key: str, payload: dict, *,
                      doctype_codes: set[str], prompt_keys: set[str],
                      industry_codes: set[str]) -> tuple[dict, list[str]]:
@@ -156,11 +195,18 @@ def validate_payload(mtype: str, key: str, payload: dict, *,
         codes = [s.section_code for s in parsed.sections]
         if len(set(codes)) != len(codes):
             errors.append("sections: section_code values must be unique")
+        code_set = set(codes)
         for s in parsed.sections:
             if s.section_code not in prompt_keys:
                 errors.append(f"sections: no prompt-master entry for section '{s.section_code}' (FR-A14)")
             if s.include_if_doctype and s.include_if_doctype not in doctype_codes:
                 errors.append(f"sections: unknown include_if_doctype '{s.include_if_doctype}'")
+            for dep in s.depends_on:
+                if dep == s.section_code:
+                    errors.append(f"sections: section '{s.section_code}' cannot depend on itself")
+                elif dep not in code_set:
+                    errors.append(f"sections: '{s.section_code}' depends_on unknown section '{dep}'")
+        errors += _dependency_cycle_errors(parsed.sections, code_set)
         for code in parsed.required_doc_types:
             if code not in doctype_codes:
                 errors.append(f"required_doc_types: unknown document type '{code}'")

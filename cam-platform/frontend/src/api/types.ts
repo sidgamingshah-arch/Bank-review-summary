@@ -220,6 +220,8 @@ export interface MasterSettings {
   agents_materiality_enabled?: boolean;
   agents_consistency_enabled?: boolean;
   agent_revision_limit?: number;
+  consistency_scope?: 'per_section' | 'post_generation';
+  worker_concurrency?: number;
   connectors_search_enabled?: boolean;
   connectors_news_enabled?: boolean;
   rag_mode?: 'off' | 'keyword' | 'embedding';
@@ -321,6 +323,11 @@ export interface AgentCheck {
   flags?: string[];
   notes?: string;
   revisions?: number;
+  // consistency check: 'per_section' or 'post_generation' (memo-level reconcile)
+  scope?: 'per_section' | 'post_generation';
+  // reconcile summary (recorded on the internal reconcile phase)
+  flagged?: string[];
+  revised?: string[];
 }
 
 export interface RetrievalPassage {
@@ -347,6 +354,11 @@ export interface AgentTraceStep {
   passages?: number;
   fallbacks?: number;
   retrieval?: RetrievalDocHit[];
+  // reconcile / revision provenance
+  trigger?: string;
+  issues?: string[];
+  flagged?: string[];
+  revised?: string[];
 }
 
 export interface RunSection {
@@ -356,6 +368,8 @@ export interface RunSection {
   status: RunSectionStatus;
   attempts: number;
   error: string | null;
+  // section interlinking (FR-D08): section codes this one consumes / waits on
+  depends_on?: string[];
   tokens_in: number;
   tokens_out: number;
   untraceable: string[];
@@ -546,7 +560,7 @@ export const AUDIT_ACTIONS: string[] = [
   'document.embedded', 'document.indexed',
   'tag.auto_applied', 'tag.added', 'tag.changed', 'tag.removed', 'run.started',
   'run.section_completed', 'run.section_failed', 'run.section_retried',
-  'run.section_regenerated', 'run.completed', 'cam.created', 'cam.section_edited',
+  'run.section_regenerated', 'run.reconciled', 'run.completed', 'cam.created', 'cam.section_edited',
   'cam.chat_message', 'cam.suggestion_created', 'cam.suggestion_accepted',
   'cam.suggestion_rejected', 'cam.finalised', 'cam.exported', 'user.login',
   'user.created', 'user.updated', 'prefs.updated',

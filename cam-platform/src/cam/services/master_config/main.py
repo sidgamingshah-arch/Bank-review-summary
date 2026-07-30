@@ -119,6 +119,11 @@ class SettingsPatch(BaseModel):
     agents_materiality_enabled: bool | None = None
     agents_consistency_enabled: bool | None = None
     agent_revision_limit: int | None = Field(default=None, ge=0, le=3)
+    consistency_scope: Literal["per_section", "post_generation"] | None = None
+    # Active generation concurrency (sections drafted in parallel). Clamped to the
+    # worker pool ceiling by the orchestration worker; the upper bound here is a
+    # sanity cap only.
+    worker_concurrency: int | None = Field(default=None, ge=1, le=64)
     connectors_search_enabled: bool | None = None
     connectors_news_enabled: bool | None = None
     rag_mode: Literal["off", "keyword", "embedding"] | None = None

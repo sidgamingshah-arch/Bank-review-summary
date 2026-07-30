@@ -10,6 +10,8 @@ interface Editable {
   agents_materiality_enabled: boolean;
   agents_consistency_enabled: boolean;
   agent_revision_limit: string;
+  consistency_scope: 'per_section' | 'post_generation';
+  worker_concurrency: string;
   connectors_news_enabled: boolean;
   connectors_search_enabled: boolean;
   rag_mode: 'off' | 'keyword' | 'embedding';
@@ -42,6 +44,8 @@ function toForm(s: MasterSettings): Editable {
     agents_materiality_enabled: s.agents_materiality_enabled ?? true,
     agents_consistency_enabled: s.agents_consistency_enabled ?? true,
     agent_revision_limit: String(s.agent_revision_limit ?? 1),
+    consistency_scope: (s.consistency_scope as Editable['consistency_scope']) ?? 'post_generation',
+    worker_concurrency: String(s.worker_concurrency ?? 2),
     connectors_news_enabled: s.connectors_news_enabled ?? false,
     connectors_search_enabled: s.connectors_search_enabled ?? false,
     rag_mode: (s.rag_mode as Editable['rag_mode']) ?? (s.rag_enabled ? 'embedding' : 'off'),
@@ -134,6 +138,11 @@ export function SettingsTab() {
       toast.error('Retrieval passages (top-K) must be an integer between 1 and 50');
       return;
     }
+    const concurrency = Number(form.worker_concurrency);
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 64) {
+      toast.error('Generation concurrency must be an integer between 1 and 64');
+      return;
+    }
     setSaving(true);
     try {
       const updated = await api.put<MasterSettings>('/api/masters/settings', {
@@ -142,6 +151,8 @@ export function SettingsTab() {
         agents_materiality_enabled: form.agents_materiality_enabled,
         agents_consistency_enabled: form.agents_consistency_enabled,
         agent_revision_limit: revisionLimit,
+        consistency_scope: form.consistency_scope,
+        worker_concurrency: concurrency,
         connectors_news_enabled: form.connectors_news_enabled,
         connectors_search_enabled: form.connectors_search_enabled,
         rag_mode: form.rag_mode,
@@ -287,18 +298,55 @@ export function SettingsTab() {
             Consistency check agent
           </label>
         </div>
+        <div className="form-grid-2">
+          <div className="field">
+            <label>Revision limit</label>
+            <input
+              className="input slim"
+              type="number"
+              min={0}
+              max={3}
+              step={1}
+              value={form.agent_revision_limit}
+              onChange={(e) => set('agent_revision_limit', e.target.value)}
+            />
+            <div className="hint">How many times a failed gate may send a section back to be redrafted (0–3).</div>
+          </div>
+          <div className="field">
+            <label>When the consistency agent runs</label>
+            <select
+              className="select slim"
+              value={form.consistency_scope}
+              onChange={(e) => set('consistency_scope', e.target.value as Editable['consistency_scope'])}
+            >
+              <option value="post_generation">After all sections (memo-level, targeted revision)</option>
+              <option value="per_section">Per section (during each section&rsquo;s pipeline)</option>
+            </select>
+            <div className="hint">
+              <strong>After all sections</strong>: one cross-section pass sees the whole memo once every
+              section is drafted and re-drafts only the sections it flags. <strong>Per section</strong>:
+              checked as each section is written (sees only siblings finished so far).
+            </div>
+          </div>
+        </div>
+
+        <h3 className="settings-group">Generation performance</h3>
         <div className="field">
-          <label>Revision limit</label>
+          <label>Concurrency (sections drafted in parallel)</label>
           <input
             className="input slim"
             type="number"
-            min={0}
-            max={3}
+            min={1}
+            max={64}
             step={1}
-            value={form.agent_revision_limit}
-            onChange={(e) => set('agent_revision_limit', e.target.value)}
+            value={form.worker_concurrency}
+            onChange={(e) => set('worker_concurrency', e.target.value)}
           />
-          <div className="hint">How many times a failed gate may send a section back to be redrafted (0–3).</div>
+          <div className="hint">
+            How many sections generate at once. Higher finishes a memo faster but sends more
+            concurrent load to the LLM endpoint (mind its rate limits). Applied within a few seconds,
+            no restart; capped by the worker pool size set at deployment (<code>CAM_WORKER_POOL_SIZE</code>).
+          </div>
         </div>
 
         <h3 className="settings-group">External connectors</h3>

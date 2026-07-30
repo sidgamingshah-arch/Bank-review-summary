@@ -41,7 +41,9 @@ class Run(Base):
             "applied_preferences": self.applied_preferences,
             "master_versions": self.master_versions, "model_identity": self.model_identity,
             "gaps": self.gaps,
-            "sections": [s.to_dict() for s in sorted(sections, key=lambda x: x.order_no)],
+            # the internal reconcile phase (kind="reconcile") is not a memo section
+            "sections": [s.to_dict() for s in sorted(sections, key=lambda x: x.order_no)
+                         if s.kind != "reconcile"],
         }
 
 
@@ -55,10 +57,14 @@ class SectionJob(Base):
     section_code: Mapped[str] = mapped_column(String(80))
     name: Mapped[str] = mapped_column(String(160), default="")
     order_no: Mapped[int] = mapped_column(Integer, default=0)
-    kind: Mapped[str] = mapped_column(String(16), default="initial")  # initial | regeneration
+    kind: Mapped[str] = mapped_column(String(16), default="initial")
+    # initial | regeneration | reconcile (memo-level cross-section consistency phase)
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
     # queued | running | complete | failed | skipped
     skip_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # section interlinking (FR-D08): section_codes whose output feeds this section
+    # and which must be terminal before it is claimed
+    depends_on: Mapped[list] = mapped_column(JSON, default=list)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -79,6 +85,7 @@ class SectionJob(Base):
         return {
             "section_code": self.section_code, "name": self.name, "order": self.order_no,
             "kind": self.kind, "status": self.status, "skip_reason": self.skip_reason,
+            "depends_on": self.depends_on or [],
             "attempts": self.attempts, "error": self.error,
             "prompt_version": self.prompt_version, "fixed_format": self.fixed_format,
             "input_documents": self.input_docs, "tokens_in": self.tokens_in,

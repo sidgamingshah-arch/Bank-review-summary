@@ -38,7 +38,8 @@ KPI_COLS = ["industry_code", "kpi_code", "kpi_name", "definition", "unit",
 TEMPLATE_COLS = ["key", "name", "segment", "relationship", "template_instructions",
                  "required_doc_types"]
 TEMPLATE_SECTION_COLS = ["template_key", "order", "section_code", "mandatory",
-                         "include_if_doctype", "length_guidance", "fixed_format"]
+                         "include_if_doctype", "length_guidance", "fixed_format",
+                         "depends_on", "depends_on_all"]
 
 EXAMPLES: dict[str, list[list[Any]]] = {
     "doctypes": [["example_audited_financials", "Audited financials",
@@ -56,8 +57,12 @@ EXAMPLES: dict[str, list[list[Any]]] = {
     "templates": [["example_corp_template", "Corporate CAM - Example", "corporate",
                    "etb", "House style: UK English, amounts in INR crore.",
                    "audited_financials|bank_statements"]],
+    # exec_summary is displayed first (order 1) but depends on every other
+    # section, so it is drafted LAST and consumes their output (depends_on_all).
     "template_sections": [["example_corp_template", 1, "exec_summary", True, "",
-                           "250 words", True]],
+                           "250 words", True, "", True],
+                          ["example_corp_template", 2, "financial_analysis", True, "",
+                           "", False, "", False]],
 }
 
 _SHEET_COLS = {
@@ -93,6 +98,12 @@ README_LINES = [
     "one KPI set",
     "  templates          — one row per CAM template (key column: key)",
     "  template_sections  — one row per template section, linked by template_key",
+    "",
+    "Section interlinking (template_sections): 'depends_on' lists section_codes "
+    "whose drafted output feeds this section (and which must finish first); "
+    "'depends_on_all'=TRUE means depend on every other section — e.g. an "
+    "executive summary that is written last and consumes the whole memo. The "
+    "dependency graph must be acyclic.",
 ]
 
 
@@ -319,7 +330,9 @@ def _parse_templates(wb, errors) -> list[dict]:
             "mandatory": _bool(r.get("mandatory"), True),
             "include_if_doctype": _s(r.get("include_if_doctype")) or None,
             "length_guidance": _s(r.get("length_guidance")),
-            "fixed_format": _bool(r.get("fixed_format"))})
+            "fixed_format": _bool(r.get("fixed_format")),
+            "depends_on": _list(r.get("depends_on")),
+            "depends_on_all": _bool(r.get("depends_on_all"))})
 
     out, consumed = [], set()
     for _rn, r in _sheet_rows(wb, "templates", TEMPLATE_COLS, "key", errors):

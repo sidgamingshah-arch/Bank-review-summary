@@ -39,7 +39,9 @@ RESOLVED_TEMPLATE = {
              "uses_industry_kpis": False}}},
     ],
     "doctype_master_versions": {"audited_financials": 2, "sanction_letter": 1, "project_report": 1},
-    "settings": {"tagging_confidence_threshold": 0.55},
+    # these tests validate the PER-SECTION pipeline; post_generation reconcile is
+    # covered separately in test_reconcile.py
+    "settings": {"tagging_confidence_threshold": 0.55, "consistency_scope": "per_section"},
 }
 
 KPI_SET = {"industry": {"industry_code": "steel", "industry_name": "Steel"},
@@ -101,9 +103,16 @@ def wired(monkeypatch):
         return {"passed": True, "inconsistencies": [], "notes": "aligned",
                 "model": "mock-cam-composer-v1", "usage": {}}
 
+    def fake_reconcile(payload):
+        agent_calls.append(("reconcile", payload))
+        return {"sections": [{"section_code": s["section_code"], "consistent": True,
+                              "issues": [], "guidance": ""} for s in payload["sections"]],
+                "parse_ok": True, "notes": "aligned", "model": "mock-cam-composer-v1", "usage": {}}
+
     monkeypatch.setattr(resolver, "genai_extract", fake_extract)
     monkeypatch.setattr(resolver, "genai_materiality", fake_materiality)
     monkeypatch.setattr(resolver, "genai_consistency", fake_consistency)
+    monkeypatch.setattr(resolver, "genai_reconcile", fake_reconcile)
 
     def fake_create_cam(payload):
         cam = {"id": "cam-1", **payload,

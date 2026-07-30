@@ -83,6 +83,17 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "agents_materiality_enabled": True,
     "agents_consistency_enabled": True,
     "agent_revision_limit": 1,
+    # WHEN the consistency-check agent runs:
+    #   per_section     -> once per section during its pipeline (sees only the
+    #                      sibling sections already complete at that moment)
+    #   post_generation -> once for the whole memo AFTER every section is drafted
+    #                      (sees all sections together) and re-drafts ONLY the
+    #                      sections it flags. Requires agents_consistency_enabled.
+    "consistency_scope": "post_generation",
+    # Active generation concurrency (number of sections drafted in parallel).
+    # Runtime-tunable; clamped to the worker pool ceiling (CAM_WORKER_POOL_SIZE)
+    # and applied without a restart.
+    "worker_concurrency": 2,
     # external grounding connectors (client-provided, integrated). Off by
     # default so runs work exactly as before until an admin enables them; a
     # section only consults a connector when its prompt sets uses_external_context.

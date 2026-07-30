@@ -187,6 +187,24 @@ def genai_consistency(payload: dict) -> dict:
     return _genai("/api/genai/consistency", payload, "genai consistency (check agent)")
 
 
+def genai_reconcile(payload: dict) -> dict:
+    return _genai("/api/genai/reconcile", payload, "genai reconcile (cross-section agent)")
+
+
+def fetch_settings() -> dict:
+    """Live master settings (for runtime operating levers like worker
+    concurrency). Fail-open to {} so the worker falls back to its env defaults
+    if master-config is briefly unreachable. Monkeypatched in tests."""
+    try:
+        with gateway_client(settings, timeout=5.0) as client:
+            resp = client.get("/api/masters/settings", headers=gateway_headers(settings))
+            if resp.status_code >= 400:
+                return {}
+            return resp.json()
+    except Exception:
+        return {}
+
+
 def create_cam(payload: dict) -> dict:
     with gateway_client(settings) as client:
         resp = client.post("/api/cams", json=payload, headers=gateway_headers(settings))
