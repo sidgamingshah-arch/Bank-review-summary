@@ -98,6 +98,89 @@ grounding (sanitised for prompt-injection like any source), and the CAM's
 *Data Gaps & Disclosures* trailer lists every external source consulted. The
 fetch is fail-open: a connector outage never blocks or fails a run.
 
+## 4b. (Optional) Large documents — retrieval (RAG)
+
+For long documents — a 300-page annual report, say — enable retrieval so each
+section is grounded on the **most relevant passages** rather than the first slice
+of full text (which would miss the financials buried deep in the file).
+
+1. Configure an **embedding endpoint**. In *Masters → Settings → LLM endpoint →
+   Embedding endpoint*, set the provider to `openai-compatible`, give it an
+   embedding model (e.g. `text-embedding-3-small`) and, if different from chat,
+   a base URL; the key comes from the env var you name (never entered in the UI).
+   Embeddings are independent of chat, so chat can stay on Anthropic while
+   embeddings run on an OpenAI-compatible endpoint. Offline, `mock` works with no
+   network. (Env equivalents: `CAM_GENAI_EMBED_PROVIDER`, `CAM_GENAI_EMBED_MODEL`,
+   `CAM_GENAI_EMBED_BASE_URL`, `CAM_GENAI_EMBED_API_KEY_ENV`.)
+2. Turn on **Large-document retrieval (RAG)** in *Masters → Settings* and set
+   *passages per document (top-K)*.
+3. Upload documents **after** enabling RAG — they are chunked and embedded at
+   intake. For documents uploaded earlier, `POST /api/documents/{id}/reindex`
+   indexes them on demand.
+
+At generation time each section retrieves its top-K passages per mapped document;
+anything not retrieved falls back to full-text grounding, so a run never loses a
+source. The run trace's per-section **retrieval** step shows exactly which
+passages grounded each section. RAG is fail-open end-to-end: if the embedding
+endpoint is unavailable, generation degrades to full-text grounding. Also raise
+`CAM_MAX_EXTRACT_CHARS` (default ~2,000,000 ≈ 650 pages) if your documents are
+larger, so retrieval can reach the whole file.
+
+## 4c. (Optional) Azure resources
+
+The platform runs fully on open-source/local defaults, but each piece can be
+pointed at Azure independently — config-gated, so mixing is fine.
+
+- **Azure OpenAI (chat + embeddings + reasoning).** Set `CAM_LLM_PROVIDER=azure`
+  and/or `CAM_GENAI_EMBED_PROVIDER=azure`, `CAM_AZURE_OPENAI_ENDPOINT`, and the
+  key in the env var named by `CAM_AZURE_OPENAI_API_KEY_ENV`. The chat/embedding
+  **deployment names** are `CAM_GENAI_MODEL` / `CAM_GENAI_EMBED_MODEL`. For an
+  o-series reasoning deployment set `CAM_AZURE_OPENAI_REASONING=true`. In the UI:
+  *Masters → Settings → LLM endpoint*, pick provider `azure` and fill the Azure
+  card (endpoint, api-version, deployment names, reasoning flag).
+- **Azure AI Search (retrieval index).** `CAM_RETRIEVAL_BACKEND=azure_search`,
+  `CAM_AZURE_SEARCH_ENDPOINT`, key env var, `CAM_AZURE_SEARCH_INDEX`. The index
+  is auto-created on first upsert; set `CAM_GENAI_EMBED_DIM` to your embedding
+  model's dimension (e.g. 1536 for text-embedding-3-small, 3072 for -large).
+  Chunks are pushed at intake and queried (vector / keyword / hybrid) per section.
+- **Azure Blob Storage (documents).** `CAM_BLOB_BACKEND=azure` +
+  `AZURE_BLOB_CONNECTION_STRING` (or `CAM_AZURE_BLOB_ACCOUNT_URL` for managed
+  identity). Install the extra: `pip install "cam-platform[azure]"`. Binaries and
+  text extracts move to the configured containers.
+
+Keys live only in env/vault (NFR-06) — the UI shows *configured / not set*, never
+values. Validate everything you enabled from inside your environment:
+
+```bash
+python scripts/azure_check.py   # probes only the Azure services you turned on
+```
+
+## 4d. (Optional) Generation tuning — concurrency, consistency, interlinking
+
+Three runtime levers in *Masters → Settings* (no restart needed):
+
+- **Concurrency (sections drafted in parallel).** *Generation performance →
+  Concurrency* sets how many sections generate at once — the biggest lever on how
+  fast a memo completes. It is clamped to the worker pool spawned at deployment
+  (`CAM_WORKER_POOL_SIZE`, default 8); raise the pool to allow higher live
+  concurrency. Higher = faster, but more concurrent load on your LLM endpoint —
+  keep it under the endpoint's rate/concurrency limit.
+- **When the consistency agent runs** (`consistency_scope`). *Assurance agents →
+  When the consistency agent runs*:
+  - **After all sections** (default) — one memo-level pass sees every section
+    together once they're all drafted and re-drafts **only** the sections it flags
+    (bounded by the revision limit). Best cross-section coherence; adds one
+    reconcile pass per run. Fail-open: a reconcile error still finalises the memo.
+  - **Per section** — checked as each section is written (sees only the siblings
+    finished so far). Lower latency, no extra pass.
+- **Section interlinking** (`depends_on` / `depends_on_all`). Declare, per template
+  section, which other sections' output feeds it (they finish first and their
+  drafted text is added to its grounding). The classic case is an **executive
+  summary** that `depends_on_all` — displayed first but generated last, consuming
+  every other section. Set it in the bulk template's `template_sections` sheet
+  (`depends_on` = pipe-separated section codes, `depends_on_all` = TRUE) or the JSON
+  bundle. The dependency graph must be acyclic (rejected at save otherwise).
+
 ## 5. Run a case
 
 In the UI (as an analyst): create a case, upload the borrower's documents (they
@@ -126,6 +209,11 @@ and use the conversational copilot.
 | `CAM_GENAI_API_KEY_ENV` / `CAM_GENAI_API_KEY` | env-var name holding the key / its value |
 | `CAM_GENAI_AUTH_SCHEME` | Authorization scheme (`Bearer`, or `""`) |
 | `CAM_GENAI_TEMPERATURE`, `CAM_GENAI_MAX_TOKENS`, `CAM_GENAI_TIMEOUT_SECONDS` | sampling / limits |
+| `CAM_GENAI_EMBED_PROVIDER` | `mock` \| `openai` (embedding backend, for RAG) |
+| `CAM_GENAI_EMBED_MODEL` / `CAM_GENAI_EMBED_BASE_URL` | embedding model id / base URL (empty → chat base URL) |
+| `CAM_GENAI_EMBED_API_KEY_ENV` | env-var name holding the embedding key (value never stored) |
+| `CAM_RAG_ENABLED`, `CAM_RAG_TOP_K` | retrieval defaults (also runtime settings) |
+| `CAM_RAG_CHUNK_SIZE`, `CAM_RAG_CHUNK_OVERLAP`, `CAM_MAX_EXTRACT_CHARS` | chunking / extract cap |
 | `CAM_CONNECTOR_NEWS_URL`, `CAM_CONNECTOR_SEARCH_URL` | connector endpoints |
 | `CAM_CONNECTOR_API_KEY_ENV` / `CAM_CONNECTOR_API_KEY` | connector key |
 | `CAM_JWT_SECRET` | token signing secret — set a real value for any live run |

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (Boolean, DateTime, Float, ForeignKey, Integer, JSON,
+                        String, Text)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from cam.common.db import Base, iso, new_id, utcnow
@@ -55,6 +56,11 @@ class Document(Base):
     tags: Mapped[list["DocumentTag"]] = relationship(
         "DocumentTag", back_populates="document", cascade="all, delete-orphan",
         order_by="DocumentTag.created_at", lazy="selectin")
+    # Retrieval chunks (RAG). Lazy 'select' (NOT selectin) so listing documents
+    # never eager-loads the potentially large embedding vectors; cascade so
+    # deleting a document removes its chunks.
+    chunks: Mapped[list["DocumentChunk"]] = relationship(
+        "DocumentChunk", back_populates="document", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict:
         return {"id": self.id, "case_id": self.case_id, "filename": self.filename,
@@ -90,3 +96,27 @@ class DocumentTag(Base):
                 "confidence": self.confidence, "source": self.source,
                 "needs_review": self.needs_review, "period_label": self.period_label,
                 "seq_order": self.seq_order, "page_range": self.page_range}
+
+
+class DocumentChunk(Base):
+    """A retrieval chunk of a document's extracted text plus its embedding
+    vector (large-document retrieval / RAG). The vector is stored as a JSON list
+    of floats — portable across SQLite (dev) and PostgreSQL (prod), no pgvector
+    dependency; similarity is a bounded in-Python cosine scan (see retrieval.py).
+    Embeddings can be large, so this is never eager-loaded (see Document.chunks).
+    """
+
+    __tablename__ = "document_chunks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(String(36), ForeignKey("documents.id"), index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    char_start: Mapped[int] = mapped_column(Integer, default=0)
+    char_end: Mapped[int] = mapped_column(Integer, default=0)
+    text: Mapped[str] = mapped_column(Text)
+    # list[float] for embedding mode; NULL for keyword mode (lexical, no vector)
+    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    dim: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    document: Mapped["Document"] = relationship("Document", back_populates="chunks")

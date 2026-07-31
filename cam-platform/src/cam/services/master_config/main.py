@@ -92,6 +92,17 @@ def _llm_info() -> dict:
         "max_tokens": settings.genai_max_tokens,
         "api_key_env": settings.genai_api_key_env,
         "api_key_configured": bool(os.environ.get(settings.genai_api_key_env)),
+        "embed_provider": settings.genai_embed_provider,
+        "embed_model": settings.genai_embed_model or None,
+        "embed_base_url": (settings.genai_embed_base_url or settings.genai_base_url) or None,
+        "embed_dim": settings.genai_embed_dim,
+        "embed_api_key_env": settings.genai_embed_api_key_env,
+        "embed_api_key_configured": bool(os.environ.get(settings.genai_embed_api_key_env)),
+        "azure_endpoint": settings.azure_openai_endpoint or None,
+        "azure_api_version": settings.azure_openai_api_version,
+        "azure_reasoning": settings.azure_openai_reasoning,
+        "azure_api_key_env": settings.azure_openai_api_key_env,
+        "azure_api_key_configured": bool(os.environ.get(settings.azure_openai_api_key_env)),
     }
 
 
@@ -108,8 +119,16 @@ class SettingsPatch(BaseModel):
     agents_materiality_enabled: bool | None = None
     agents_consistency_enabled: bool | None = None
     agent_revision_limit: int | None = Field(default=None, ge=0, le=3)
+    consistency_scope: Literal["per_section", "post_generation"] | None = None
+    # Active generation concurrency (sections drafted in parallel). Clamped to the
+    # worker pool ceiling by the orchestration worker; the upper bound here is a
+    # sanity cap only.
+    worker_concurrency: int | None = Field(default=None, ge=1, le=64)
     connectors_search_enabled: bool | None = None
     connectors_news_enabled: bool | None = None
+    rag_mode: Literal["off", "keyword", "embedding"] | None = None
+    rag_enabled: bool | None = None
+    rag_top_k: int | None = Field(default=None, ge=1, le=50)
 
 
 @app.put("/api/masters/settings")
@@ -137,7 +156,11 @@ def put_settings(body: SettingsPatch, principal: Principal = Depends(require("ma
 # ---- editable LLM egress config (non-secret; the API key stays env/vault-only)
 LLM_CONFIG_KEYS = ("llm_provider", "genai_model", "genai_base_url", "genai_temperature",
                    "genai_max_tokens", "genai_timeout_seconds", "genai_auth_scheme",
-                   "genai_api_key_env")
+                   "genai_api_key_env",
+                   "genai_embed_provider", "genai_embed_model", "genai_embed_base_url",
+                   "genai_embed_api_key_env", "genai_embed_dim",
+                   "azure_openai_endpoint", "azure_openai_api_version",
+                   "azure_openai_api_key_env", "azure_openai_reasoning")
 
 
 def _reload_genai() -> None:
@@ -162,7 +185,7 @@ def get_llm_config(principal: Principal = Depends(require("masters:read"))):
 
 
 class LlmConfigPatch(BaseModel):
-    llm_provider: Literal["mock", "anthropic", "openai"] | None = None
+    llm_provider: Literal["mock", "anthropic", "openai", "azure"] | None = None
     genai_model: str | None = None
     genai_base_url: str | None = None
     genai_temperature: float | None = Field(default=None, ge=0.0, le=2.0)
@@ -170,6 +193,19 @@ class LlmConfigPatch(BaseModel):
     genai_timeout_seconds: float | None = Field(default=None, ge=1, le=600)
     genai_auth_scheme: str | None = None
     genai_api_key_env: str | None = None
+    # embedding egress (RAG). The key itself is never accepted — only the NAME
+    # of the env var holding it (NFR-06), exactly like genai_api_key_env.
+    genai_embed_provider: Literal["mock", "openai", "azure"] | None = None
+    genai_embed_model: str | None = None
+    genai_embed_base_url: str | None = None
+    genai_embed_api_key_env: str | None = None
+    genai_embed_dim: int | None = Field(default=None, ge=16, le=8192)
+    # Azure OpenAI egress (chat + embeddings). Deployment names reuse genai_model
+    # / genai_embed_model. The key is env/vault-only (NFR-06) — never accepted here.
+    azure_openai_endpoint: str | None = None
+    azure_openai_api_version: str | None = None
+    azure_openai_api_key_env: str | None = None
+    azure_openai_reasoning: bool | None = None
 
 
 @app.put("/api/masters/llm-config")
@@ -187,6 +223,32 @@ def put_llm_config(body: LlmConfigPatch,
             raise ApiError.validation("genai_base_url is required when llm_provider is 'openai'")
         if updates.get("genai_base_url") and not base_url.lower().startswith(("http://", "https://")):
             raise ApiError.validation("genai_base_url must start with http:// or https://")
+        # embedding egress (RAG): an openai embedder needs a base URL (its own or
+        # the chat base_url it falls back to) and a model.
+        embed_base = str(merged.get("genai_embed_base_url") or "").strip() or base_url
+        if merged.get("genai_embed_provider") == "openai":
+            if not embed_base:
+                raise ApiError.validation(
+                    "genai_embed_base_url (or genai_base_url) is required when "
+                    "genai_embed_provider is 'openai'")
+            if not str(merged.get("genai_embed_model") or "").strip():
+                raise ApiError.validation(
+                    "genai_embed_model is required when genai_embed_provider is 'openai'")
+        if updates.get("genai_embed_base_url") and not str(
+                updates["genai_embed_base_url"]).lower().startswith(("http://", "https://")):
+            raise ApiError.validation("genai_embed_base_url must start with http:// or https://")
+        # Azure OpenAI egress: chat or embeddings on 'azure' needs an endpoint and
+        # a deployment name (deployments reuse genai_model / genai_embed_model).
+        azure_endpoint = str(merged.get("azure_openai_endpoint") or "").strip()
+        uses_azure = merged.get("llm_provider") == "azure" or merged.get("genai_embed_provider") == "azure"
+        if uses_azure and not azure_endpoint:
+            raise ApiError.validation("azure_openai_endpoint is required when a provider is 'azure'")
+        if updates.get("azure_openai_endpoint") and not azure_endpoint.lower().startswith("https://"):
+            raise ApiError.validation("azure_openai_endpoint must start with https://")
+        if merged.get("llm_provider") == "azure" and not str(merged.get("genai_model") or "").strip():
+            raise ApiError.validation("genai_model (chat deployment name) is required for azure chat")
+        if merged.get("genai_embed_provider") == "azure" and not str(merged.get("genai_embed_model") or "").strip():
+            raise ApiError.validation("genai_embed_model (embedding deployment name) is required for azure embeddings")
         before = {k: stored.get(k) for k in updates}
         for key, value in updates.items():
             row = db.get(Setting, key)

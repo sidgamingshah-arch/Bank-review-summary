@@ -64,6 +64,18 @@ Full walkthrough — including bulk-loading your prompt library and the
 search/negative-news connectors — is in **[docs/LIVE_RUN.md](docs/LIVE_RUN.md)**.
 Bedrock/Vertex are further provider additions behind the same interface (ADR-0005).
 
+### Large documents (retrieval / RAG)
+
+For long documents — a 300-page annual report — enable **retrieval** so each
+section is grounded on its most relevant passages rather than the first slice of
+full text. Documents are chunked and embedded at intake (through the same single
+GenAI egress) and each section fetches its top-K passages, falling back to
+full-text grounding if retrieval is unavailable — so nothing regresses when it's
+off (the default). Embeddings are configured independently of chat (Anthropic
+has no embeddings API), so chat can run on Anthropic while embeddings run on an
+OpenAI-compatible endpoint. Turn it on in *Masters → Settings*; the run trace
+records exactly which passages grounded each section. See **[docs/LIVE_RUN.md](docs/LIVE_RUN.md) §4b**.
+
 ## Moving configuration between environments
 
 The seeded masters are a sample. At deployment, export the governed

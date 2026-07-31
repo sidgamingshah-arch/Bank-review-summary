@@ -20,7 +20,7 @@ from cam.common.security import Principal, make_auth_dependencies
 from . import agents
 from .assembly import (CLASSIFY_SYSTEM, build_classify_user, build_edit_user,
                        build_generate_user, build_system)
-from .providers import make_provider
+from .providers import make_embedder, make_provider
 from .trace import untraceable_numbers
 
 settings = get_settings("genai")
@@ -33,11 +33,16 @@ app = create_app(settings, "CAM genai-gateway")
 # from env, NFR-06). Overrides load lazily and are refreshed by /reload, which
 # master-config calls when an admin saves — so changes apply without a restart.
 _provider = None
+_embedder = None
 _overrides: dict | None = None
 
 _LLM_OVERRIDE_FIELDS = ("llm_provider", "genai_model", "genai_base_url", "genai_temperature",
                         "genai_max_tokens", "genai_timeout_seconds", "genai_auth_scheme",
-                        "genai_api_key_env")
+                        "genai_api_key_env",
+                        "genai_embed_provider", "genai_embed_model", "genai_embed_base_url",
+                        "genai_embed_api_key_env", "genai_embed_dim",
+                        "azure_openai_endpoint", "azure_openai_api_version",
+                        "azure_openai_api_key_env", "azure_openai_reasoning")
 
 
 def _load_overrides() -> dict:
@@ -69,13 +74,23 @@ def get_provider():
     return _provider
 
 
+def get_embedder():
+    """Embedding provider singleton (built lazily from the effective config,
+    independent of the chat provider — see providers.make_embedder)."""
+    global _embedder
+    if _embedder is None:
+        _embedder = make_embedder(_effective_settings())
+    return _embedder
+
+
 @app.post("/api/genai/reload")
 def reload_provider(principal: Principal = Depends(require_service)):
     """Re-read the admin LLM config and rebuild the provider (no restart).
     master-config calls this when the config is saved."""
-    global _provider, _overrides
+    global _provider, _embedder, _overrides
     _overrides = _load_overrides()
     _provider = None
+    _embedder = None  # embedding config is admin-overridable too — rebuild it
     eff = _effective_settings()
     return {"reloaded": True, "provider": eff.llm_provider, "model": eff.genai_model}
 
@@ -97,6 +112,19 @@ def config(principal: Principal = Depends(require_service)):
         "auth_scheme": eff.genai_auth_scheme,
         "api_key_env": eff.genai_api_key_env,
         "api_key_configured": bool(os.environ.get(eff.genai_api_key_env)),
+        # embedding egress (large-document retrieval / RAG)
+        "embed_provider": eff.genai_embed_provider,
+        "embed_model": eff.genai_embed_model or None,
+        "embed_base_url": (eff.genai_embed_base_url or eff.genai_base_url) or None,
+        "embed_dim": eff.genai_embed_dim,
+        "embed_api_key_env": eff.genai_embed_api_key_env,
+        "embed_api_key_configured": bool(os.environ.get(eff.genai_embed_api_key_env)),
+        # Azure OpenAI (chat/embeddings when provider == azure)
+        "azure_endpoint": eff.azure_openai_endpoint or None,
+        "azure_api_version": eff.azure_openai_api_version,
+        "azure_reasoning": eff.azure_openai_reasoning,
+        "azure_api_key_env": eff.azure_openai_api_key_env,
+        "azure_api_key_configured": bool(os.environ.get(eff.azure_openai_api_key_env)),
     }
 
 
@@ -236,6 +264,49 @@ def consistency(body: ConsistencyRequest, principal: Principal = Depends(require
             "model": result.model, "usage": result.usage}
 
 
+class ReconcileSection(BaseModel):
+    section_code: str
+    name: str = ""
+    content: str = ""
+    figures: list[str] = []
+
+
+class ReconcileRequest(BaseModel):
+    sections: list[ReconcileSection] = Field(min_length=1)
+    agent_rules: str | None = None
+
+
+@app.post("/api/genai/reconcile")
+def reconcile(body: ReconcileRequest, principal: Principal = Depends(require_service)):
+    """CROSS-SECTION RECONCILIATION AGENT: sees every drafted section together and
+    returns, per section, whether it must be revised for cross-section consistency
+    and guidance on how. Unparseable/short replies fail open to all-consistent so a
+    bad reply never forces a spurious rewrite."""
+    request = body.model_dump()
+    system = agents.role_system(agents.RECONCILE_SYSTEM, request.get("agent_rules"))
+    user = agents.build_reconcile_user(request["sections"])
+    result = get_provider().reconcile(request, system, user)
+    parsed = agents.parse_agent_json(result.content, "sections")
+    verdicts_in = (parsed or {}).get("sections") if parsed else None
+    codes = {s["section_code"] for s in request["sections"]}
+    by_code: dict[str, dict] = {}
+    for v in (verdicts_in or []):
+        if isinstance(v, dict) and v.get("section_code") in codes:
+            by_code[v["section_code"]] = {
+                "section_code": v["section_code"],
+                # fail-open: a section absent/mis-shaped in the reply is consistent
+                "consistent": bool(v.get("consistent", True)),
+                "issues": [str(i) for i in (v.get("issues") or [])][:20],
+                "guidance": str(v.get("guidance", ""))[:600]}
+    # every input section gets a verdict; ones the model omitted default consistent
+    sections_out = [by_code.get(code, {"section_code": code, "consistent": True,
+                                       "issues": [], "guidance": ""})
+                    for code in (s["section_code"] for s in request["sections"])]
+    return {"sections": sections_out, "parse_ok": parsed is not None,
+            "notes": str((parsed or {}).get("notes", ""))[:300],
+            "model": result.model, "usage": result.usage}
+
+
 class ClassifyDoctype(BaseModel):
     code: str
     name: str = ""
@@ -277,6 +348,20 @@ def classify(body: ClassifyRequest, principal: Principal = Depends(require_servi
         pass
     return {"code": code, "confidence": confidence if code else 0.0,
             "rationale": rationale, "model": result.model, "usage": result.usage}
+
+
+class EmbedRequest(BaseModel):
+    texts: list[str] = Field(min_length=1, max_length=4096)
+
+
+@app.post("/api/genai/embed")
+def embed(body: EmbedRequest, principal: Principal = Depends(require_service)):
+    """Embed one or more texts for large-document retrieval (RAG). Service-only
+    (NFR-10 single egress): the document service calls this at intake to index
+    chunks and at retrieval time to embed the query. Returns unit vectors."""
+    result = get_embedder().embed(body.texts)
+    return {"embeddings": result.vectors, "model": result.model,
+            "dim": result.dim, "usage": result.usage}
 
 
 @app.post("/api/genai/edit")

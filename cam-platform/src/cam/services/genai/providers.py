@@ -31,6 +31,14 @@ class GenResult:
     rationale: str = ""
 
 
+@dataclass
+class EmbedResult:
+    vectors: list[list[float]]
+    model: str
+    dim: int
+    usage: dict = field(default_factory=dict)
+
+
 def _estimate_usage(system: str, user: str, content: str) -> dict:
     return {"input_tokens": (len(system) + len(user)) // 4,
             "output_tokens": len(content) // 4}
@@ -228,6 +236,14 @@ class MockProvider:
         return GenResult(content=content, model=self.model,
                          usage=_estimate_usage(system, user, content))
 
+    def reconcile(self, request: dict, system: str, user: str) -> GenResult:
+        import json
+
+        from . import agents
+        content = json.dumps(agents.mock_reconcile(request))
+        return GenResult(content=content, model=self.model,
+                         usage=_estimate_usage(system, user, content))
+
 
 # ----------------------------------------------------------------- anthropic
 
@@ -293,6 +309,9 @@ class AnthropicProvider:
         return self._call(request, system, user)
 
     def consistency(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
+
+    def reconcile(self, request: dict, system: str, user: str) -> GenResult:
         return self._call(request, system, user)
 
 
@@ -407,10 +426,262 @@ class OpenAICompatibleProvider:
     def consistency(self, request: dict, system: str, user: str) -> GenResult:
         return self._call(request, system, user)
 
+    def reconcile(self, request: dict, system: str, user: str) -> GenResult:
+        return self._call(request, system, user)
+
+
+# ------------------------------------------------------------- azure openai
+
+class AzureOpenAIProvider(OpenAICompatibleProvider):
+    """Azure OpenAI chat completions. Differs from the generic OpenAI-compatible
+    path in three ways: the URL is deployment-scoped with an ``api-version``
+    query param, auth is the ``api-key`` header (not Bearer), and o-series
+    *reasoning* deployments use ``max_completion_tokens`` and reject sampling
+    params. The chat deployment name is taken from ``genai_model``. The key is
+    read from the env var named by ``azure_openai_api_key_env`` and never
+    stored/logged (NFR-06). Role methods + response parsing are inherited.
+    """
+
+    name = "azure"
+
+    def __init__(self, settings: Settings):
+        if not settings.azure_openai_endpoint:
+            raise ApiError(500, "genai_misconfigured",
+                           "CAM_AZURE_OPENAI_ENDPOINT must be set when CAM_LLM_PROVIDER=azure")
+        if not settings.genai_model:
+            raise ApiError(500, "genai_misconfigured",
+                           "CAM_GENAI_MODEL (the chat deployment name) must be set for azure")
+        self.settings = settings
+        base = settings.azure_openai_endpoint.rstrip("/")
+        self._url = (f"{base}/openai/deployments/{settings.genai_model}"
+                     f"/chat/completions?api-version={settings.azure_openai_api_version}")
+        headers = {"Content-Type": "application/json"}
+        key = os.environ.get(settings.azure_openai_api_key_env, "")
+        if key:
+            headers["api-key"] = key
+        self.client = httpx.Client(timeout=settings.genai_timeout_seconds, headers=headers)
+
+    def _call(self, request: dict, system: str, user: str) -> GenResult:
+        overrides = request.get("model_overrides") or {}
+        max_tokens = overrides.get("max_tokens") or self.settings.genai_max_tokens
+        # The deployment (model) is encoded in the URL, not the body.
+        body: dict = {"messages": [{"role": "system", "content": system},
+                                   {"role": "user", "content": user}]}
+        if self.settings.azure_openai_reasoning:
+            # o-series reasoning deployments: token budget is max_completion_tokens
+            # and sampling params (temperature) are rejected.
+            body["max_completion_tokens"] = max_tokens
+        else:
+            body["max_tokens"] = max_tokens
+            temperature = overrides.get("temperature")
+            if temperature is None:
+                temperature = self.settings.genai_temperature
+            if temperature is not None:
+                body["temperature"] = temperature
+        try:
+            resp = self.client.post(self._url, json=body)
+        except httpx.HTTPError:
+            raise ApiError(502, "genai_upstream_error", "model endpoint unreachable")
+        if resp.status_code >= 400:
+            raise ApiError(502, "genai_upstream_error",
+                           f"model endpoint returned {resp.status_code}")
+        try:
+            data = resp.json()
+            choice = (data.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            content = message.get("content") or ""
+            finish = choice.get("finish_reason")
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+            raise ApiError(502, "genai_upstream_error",
+                           "model endpoint returned an unreadable response")
+        if isinstance(content, list):
+            content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+        if finish == "content_filter":
+            raise ApiError(502, "model_refusal",
+                           "the model declined this request; section flagged for manual drafting")
+        usage = _estimate_usage(system, user, content)
+        usage_raw = data.get("usage")
+        if isinstance(usage_raw, dict):
+            try:
+                inp = int(usage_raw.get("prompt_tokens") or 0)
+                out = int(usage_raw.get("completion_tokens") or 0)
+                if inp or out:
+                    usage = {"input_tokens": inp, "output_tokens": out}
+            except (TypeError, ValueError):
+                pass
+        return GenResult(content=content, model=self.settings.genai_model, usage=usage)
+
 
 def make_provider(settings: Settings):
     if settings.llm_provider == "anthropic":
         return AnthropicProvider(settings)
+    if settings.llm_provider == "azure":
+        return AzureOpenAIProvider(settings)
     if settings.llm_provider == "openai":
         return OpenAICompatibleProvider(settings)
     return MockProvider(settings)
+
+
+# ============================================================ embeddings
+# Embeddings power large-document retrieval (RAG). A dedicated abstraction —
+# NOT a fourth role on the chat providers — because the embed contract is
+# texts -> vectors (not the request/system/user -> GenResult of chat), and
+# Anthropic has no embeddings endpoint, so the embed backend must be selectable
+# independently of the chat provider.
+
+import hashlib
+import math
+
+_EMBED_TOKEN = re.compile(r"[^a-z0-9]+")
+
+
+def _l2_normalise(vec: list[float]) -> list[float]:
+    norm = math.sqrt(sum(v * v for v in vec))
+    if norm == 0.0:
+        return vec
+    return [v / norm for v in vec]
+
+
+class MockEmbedder:
+    """Deterministic, offline embedder used for dev, tests and demos.
+
+    Each text is tokenised the same way the mock classifier is, every token is
+    hashed (stable ``hashlib`` digest — NOT the salted builtin ``hash``) into a
+    fixed-dimension bag-of-words vector, and the vector is L2-normalised so
+    cosine similarity is meaningful. Keyword-overlapping passages therefore rank
+    together — enough for retrieval to work end-to-end without a network.
+    """
+
+    name = "mock"
+
+    def __init__(self, settings: Settings):
+        self.model = "mock-embed-v1"
+        self.dim = max(16, int(settings.genai_embed_dim or 256))
+
+    def _one(self, text: str) -> list[float]:
+        vec = [0.0] * self.dim
+        for tok in _EMBED_TOKEN.split((text or "").lower()):
+            if len(tok) <= 2:
+                continue
+            idx = int(hashlib.md5(tok.encode("utf-8")).hexdigest(), 16) % self.dim
+            vec[idx] += 1.0
+        return _l2_normalise(vec)
+
+    def embed(self, texts: list[str]) -> EmbedResult:
+        vectors = [self._one(t) for t in texts]
+        chars = sum(len(t or "") for t in texts)
+        return EmbedResult(vectors=vectors, model=self.model, dim=self.dim,
+                           usage={"input_tokens": chars // 4, "output_tokens": 0})
+
+
+class OpenAIEmbedder:
+    """OpenAI-compatible embeddings endpoint (POST ``<base_url>/embeddings``).
+
+    Reuses the chat provider's URL/auth convention: ``genai_embed_base_url`` (or
+    ``genai_base_url``) already carries the version prefix (e.g. ``/v1``) and
+    ``/embeddings`` is appended. The API key is read from the env var named by
+    ``genai_embed_api_key_env`` and held only on the HTTP client's headers —
+    never stored on Settings, never logged (NFR-06). Inputs are sub-batched to
+    stay within provider request limits; failures map to the 502 envelope.
+    """
+
+    name = "openai"
+    _BATCH = 96
+
+    def __init__(self, settings: Settings):
+        base = (settings.genai_embed_base_url or settings.genai_base_url or "").rstrip("/")
+        if not base:
+            raise ApiError(500, "genai_misconfigured",
+                           "CAM_GENAI_EMBED_BASE_URL (or CAM_GENAI_BASE_URL) must be set "
+                           "when CAM_GENAI_EMBED_PROVIDER=openai")
+        if not settings.genai_embed_model:
+            raise ApiError(500, "genai_misconfigured",
+                           "CAM_GENAI_EMBED_MODEL must be set when CAM_GENAI_EMBED_PROVIDER=openai")
+        self.settings = settings
+        self.model = settings.genai_embed_model
+        self._url = base + "/embeddings"
+        headers = {"Content-Type": "application/json"}
+        key = os.environ.get(settings.genai_embed_api_key_env, "")
+        if key:
+            scheme = (settings.genai_auth_scheme or "").strip()
+            headers["Authorization"] = f"{scheme} {key}".strip()
+        self.client = httpx.Client(timeout=settings.genai_timeout_seconds, headers=headers)
+
+    def _call_batch(self, texts: list[str]) -> tuple[list[list[float]], int]:
+        try:
+            resp = self.client.post(self._url, json={"model": self.model, "input": texts})
+        except httpx.HTTPError:
+            # message deliberately carries no request/response detail (NFR-06)
+            raise ApiError(502, "genai_upstream_error", "embedding endpoint unreachable")
+        if resp.status_code >= 400:
+            raise ApiError(502, "genai_upstream_error",
+                           f"embedding endpoint returned {resp.status_code}")
+        try:
+            data = resp.json()
+            rows = sorted(data["data"], key=lambda d: d.get("index", 0))
+            vectors = [[float(x) for x in row["embedding"]] for row in rows]
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+            raise ApiError(502, "genai_upstream_error",
+                           "embedding endpoint returned an unreadable response")
+        if len(vectors) != len(texts):
+            raise ApiError(502, "genai_upstream_error",
+                           "embedding endpoint returned a mismatched vector count")
+        usage_raw = data.get("usage") if isinstance(data, dict) else None
+        toks = 0
+        if isinstance(usage_raw, dict):
+            try:
+                toks = int(usage_raw.get("prompt_tokens") or usage_raw.get("total_tokens") or 0)
+            except (TypeError, ValueError):
+                toks = 0
+        return vectors, toks
+
+    def embed(self, texts: list[str]) -> EmbedResult:
+        vectors: list[list[float]] = []
+        tokens = 0
+        for start in range(0, len(texts), self._BATCH):
+            batch = texts[start:start + self._BATCH]
+            vecs, toks = self._call_batch(batch)
+            vectors.extend(vecs)
+            tokens += toks
+        dim = len(vectors[0]) if vectors else 0
+        if tokens == 0:
+            tokens = sum(len(t or "") for t in texts) // 4
+        return EmbedResult(vectors=vectors, model=self.model, dim=dim,
+                           usage={"input_tokens": tokens, "output_tokens": 0})
+
+
+class AzureOpenAIEmbedder(OpenAIEmbedder):
+    """Azure OpenAI embeddings — deployment-scoped URL + api-version + api-key
+    header. The embedding deployment name is taken from ``genai_embed_model``.
+    Batching and response parsing are inherited from OpenAIEmbedder.
+    """
+
+    name = "azure"
+
+    def __init__(self, settings: Settings):
+        if not settings.azure_openai_endpoint:
+            raise ApiError(500, "genai_misconfigured",
+                           "CAM_AZURE_OPENAI_ENDPOINT must be set when "
+                           "CAM_GENAI_EMBED_PROVIDER=azure")
+        if not settings.genai_embed_model:
+            raise ApiError(500, "genai_misconfigured",
+                           "CAM_GENAI_EMBED_MODEL (the embedding deployment name) must be "
+                           "set when CAM_GENAI_EMBED_PROVIDER=azure")
+        self.settings = settings
+        self.model = settings.genai_embed_model
+        base = settings.azure_openai_endpoint.rstrip("/")
+        self._url = (f"{base}/openai/deployments/{self.model}"
+                     f"/embeddings?api-version={settings.azure_openai_api_version}")
+        headers = {"Content-Type": "application/json"}
+        key = os.environ.get(settings.azure_openai_api_key_env, "")
+        if key:
+            headers["api-key"] = key
+        self.client = httpx.Client(timeout=settings.genai_timeout_seconds, headers=headers)
+
+
+def make_embedder(settings: Settings):
+    if settings.genai_embed_provider == "azure":
+        return AzureOpenAIEmbedder(settings)
+    if settings.genai_embed_provider == "openai":
+        return OpenAIEmbedder(settings)
+    return MockEmbedder(settings)

@@ -176,6 +176,19 @@ export interface LlmInfo {
   auth_scheme?: string;
   api_key_env: string;
   api_key_configured: boolean;
+  // embedding egress (large-document retrieval / RAG)
+  embed_provider?: string;
+  embed_model?: string | null;
+  embed_base_url?: string | null;
+  embed_dim?: number;
+  embed_api_key_env?: string;
+  embed_api_key_configured?: boolean;
+  // Azure OpenAI (chat/embeddings when provider === 'azure')
+  azure_endpoint?: string | null;
+  azure_api_version?: string;
+  azure_reasoning?: boolean;
+  azure_api_key_env?: string;
+  azure_api_key_configured?: boolean;
 }
 
 // Editable, non-secret LLM config (PUT /api/masters/llm-config).
@@ -188,6 +201,17 @@ export interface LlmConfigInput {
   genai_timeout_seconds?: number | null;
   genai_auth_scheme?: string | null;
   genai_api_key_env?: string | null;
+  // embedding egress (never the key value — only the env var NAME)
+  genai_embed_provider?: string;
+  genai_embed_model?: string | null;
+  genai_embed_base_url?: string | null;
+  genai_embed_api_key_env?: string | null;
+  genai_embed_dim?: number | null;
+  // Azure OpenAI egress (key stays env/vault-only)
+  azure_openai_endpoint?: string | null;
+  azure_openai_api_version?: string | null;
+  azure_openai_api_key_env?: string | null;
+  azure_openai_reasoning?: boolean | null;
 }
 
 export interface MasterSettings {
@@ -196,8 +220,13 @@ export interface MasterSettings {
   agents_materiality_enabled?: boolean;
   agents_consistency_enabled?: boolean;
   agent_revision_limit?: number;
+  consistency_scope?: 'per_section' | 'post_generation';
+  worker_concurrency?: number;
   connectors_search_enabled?: boolean;
   connectors_news_enabled?: boolean;
+  rag_mode?: 'off' | 'keyword' | 'embedding';
+  rag_enabled?: boolean;
+  rag_top_k?: number;
   _llm?: LlmInfo;
   [key: string]: unknown;
 }
@@ -294,6 +323,23 @@ export interface AgentCheck {
   flags?: string[];
   notes?: string;
   revisions?: number;
+  // consistency check: 'per_section' or 'post_generation' (memo-level reconcile)
+  scope?: 'per_section' | 'post_generation';
+  // reconcile summary (recorded on the internal reconcile phase)
+  flagged?: string[];
+  revised?: string[];
+}
+
+export interface RetrievalPassage {
+  ordinal: number;
+  score: number;
+}
+
+export interface RetrievalDocHit {
+  doc_id: string;
+  label: string;
+  fallback: boolean;
+  passages: RetrievalPassage[];
 }
 
 export interface AgentTraceStep {
@@ -303,6 +349,16 @@ export interface AgentTraceStep {
   tokens_out: number;
   passed?: boolean | null;
   revision?: number;
+  // retrieval (RAG) step provenance
+  docs?: number;
+  passages?: number;
+  fallbacks?: number;
+  retrieval?: RetrievalDocHit[];
+  // reconcile / revision provenance
+  trigger?: string;
+  issues?: string[];
+  flagged?: string[];
+  revised?: string[];
 }
 
 export interface RunSection {
@@ -312,6 +368,8 @@ export interface RunSection {
   status: RunSectionStatus;
   attempts: number;
   error: string | null;
+  // section interlinking (FR-D08): section codes this one consumes / waits on
+  depends_on?: string[];
   tokens_in: number;
   tokens_out: number;
   untraceable: string[];
@@ -499,9 +557,10 @@ export const AUDIT_ACTIONS: string[] = [
   'master.rejected', 'master.rolled_back', 'master.bundle_exported', 'master.bundle_imported',
   'master.bulk_uploaded', 'settings.updated', 'case.created',
   'document.uploaded', 'document.pulled', 'document.quarantined', 'document.deleted',
+  'document.embedded', 'document.indexed',
   'tag.auto_applied', 'tag.added', 'tag.changed', 'tag.removed', 'run.started',
   'run.section_completed', 'run.section_failed', 'run.section_retried',
-  'run.section_regenerated', 'run.completed', 'cam.created', 'cam.section_edited',
+  'run.section_regenerated', 'run.reconciled', 'run.completed', 'cam.created', 'cam.section_edited',
   'cam.chat_message', 'cam.suggestion_created', 'cam.suggestion_accepted',
   'cam.suggestion_rejected', 'cam.finalised', 'cam.exported', 'user.login',
   'user.created', 'user.updated', 'prefs.updated',

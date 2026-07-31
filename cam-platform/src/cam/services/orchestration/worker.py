@@ -39,6 +39,42 @@ MAX_SECTION_ATTEMPTS = int(os.environ.get("CAM_MAX_SECTION_ATTEMPTS", "3"))
 _REAP_INTERVAL_SECONDS = 30.0
 _last_reap = 0.0
 
+# Terminal SectionJob states (a dependency/section is "settled" in any of these).
+_TERMINAL = ("complete", "failed", "skipped")
+
+# A dependent section is grounded on the OUTPUT of the sections it depends on;
+# cap each injected section so an exec-summary-consumes-all case stays bounded.
+_DEP_CONTENT_CAP = 30_000
+
+# Runtime active-concurrency gate. The worker pool is spawned at a fixed ceiling
+# (worker_pool_size); the ACTIVE concurrency is the live 'worker_concurrency'
+# master setting, cached briefly and clamped to [1, ceiling]. Workers whose index
+# is >= active idle, so an admin can dial concurrency up/down without a restart.
+_pool_size = 0  # set by main.py at startup
+_active_cache: dict = {"value": None, "at": 0.0}
+_ACTIVE_TTL_SECONDS = 5.0
+
+
+def _active_concurrency() -> int:
+    """Live active-section concurrency (master setting 'worker_concurrency'),
+    cached for a few seconds and clamped to [1, pool ceiling]. Fail-open to the
+    environment default when master-config is briefly unreachable."""
+    default = int(getattr(settings, "worker_concurrency", 2) or 2)
+    ceiling = _pool_size or default
+    now = time.monotonic()
+    if _active_cache["value"] is not None and now - _active_cache["at"] < _ACTIVE_TTL_SECONDS:
+        return _active_cache["value"]
+    val = default
+    try:
+        raw = resolver.fetch_settings().get("worker_concurrency", default)
+        val = int(raw)
+    except Exception:  # fail-open: a bad/unreachable setting never stalls generation
+        val = default
+    val = max(1, min(val, ceiling))
+    _active_cache["value"] = val
+    _active_cache["at"] = now
+    return val
+
 
 def render_kpi_block(kpis: list[dict], section_code: str) -> str:
     """FR-A11: the {{industry_kpis}} injection block for one section."""
@@ -117,21 +153,56 @@ def build_gap_trailer(run: Run, sections: list[SectionJob]) -> str:
     return "\n\n".join(parts)
 
 
+def _deps_satisfied(statuses: dict[str, str], deps: list) -> bool:
+    """True when every declared dependency section is terminal (FR-D08). An
+    unknown code (e.g. a section absent from this run) never blocks."""
+    return all(statuses.get(code, "complete") in _TERMINAL for code in (deps or []))
+
+
 def _claim_next() -> str | None:
-    """Claim one queued job whose run is still active. Serialised claim keeps
-    this correct for in-process concurrency; on PostgreSQL the same query runs
-    with FOR UPDATE SKIP LOCKED semantics (see ADR-0004)."""
+    """Claim the first ready queued job. A job is ready when its run is active and
+    either (a) it is a section whose dependency sections are all terminal (FR-D08),
+    or (b) it is the memo-level reconcile phase and every initial section of its run
+    is terminal. Serialised claim keeps this correct for in-process concurrency; on
+    PostgreSQL SELECT ... FOR UPDATE SKIP LOCKED keeps multi-process claims disjoint
+    (see ADR-0004). Ordering by order_no preserves the original claim preference."""
     from sqlalchemy import or_
 
     with _claim_lock, SessionLocal() as db:
-        job = db.scalar(
+        candidates = list(db.scalars(
             select(SectionJob).join(Run, SectionJob.run_id == Run.id)
             .where(SectionJob.status == "queued",
                    or_(Run.status.in_(["queued", "running"]),
-                       SectionJob.kind == "regeneration"))
-            .order_by(SectionJob.order_no).limit(1))
+                       SectionJob.kind.in_(["regeneration", "reconcile"])))
+            .order_by(SectionJob.order_no)
+            .with_for_update(skip_locked=True, of=SectionJob).limit(200)).all())
+        if not candidates:
+            return None
+
+        # per-run map of initial-section statuses, built once and reused
+        status_cache: dict[str, dict[str, str]] = {}
+
+        def statuses_for(run_id: str) -> dict[str, str]:
+            if run_id not in status_cache:
+                rows = db.scalars(select(SectionJob).where(
+                    SectionJob.run_id == run_id, SectionJob.kind == "initial")).all()
+                status_cache[run_id] = {r.section_code: r.status for r in rows}
+            return status_cache[run_id]
+
+        job = None
+        for cand in candidates:
+            if cand.kind == "reconcile":
+                initial = statuses_for(cand.run_id)
+                if initial and all(s in _TERMINAL for s in initial.values()):
+                    job = cand
+                    break
+                continue
+            if _deps_satisfied(statuses_for(cand.run_id), cand.depends_on):
+                job = cand
+                break
         if not job:
             return None
+
         job.status = "running"
         job.attempts += 1
         job.claimed_at = utcnow()
@@ -181,6 +252,15 @@ def _maybe_reap() -> None:
             log.exception("reaper sweep failed")
 
 
+def _resolve_rag_mode(settings_snap: dict) -> str:
+    """Retrieval mode from the run's settings snapshot: rag_mode
+    (off|keyword|embedding) wins; the legacy rag_enabled maps True -> embedding."""
+    mode = settings_snap.get("rag_mode")
+    if mode in ("off", "keyword", "embedding"):
+        return mode
+    return "embedding" if settings_snap.get("rag_enabled") else "off"
+
+
 def _section_payload(run: Run, job: SectionJob) -> dict:
     resolution = run.resolution
     section = next(s for s in resolution["sections"] if s["section_code"] == job.section_code)
@@ -201,12 +281,47 @@ def _section_payload(run: Run, job: SectionJob) -> dict:
     from cam.common.placeholders import resolve_placeholders
     section_prompt, _ = resolve_placeholders(prompt_payload["prompt_text"], placeholders)
 
+    settings_snap = resolution.get("settings") or {}
+    rag_mode = _resolve_rag_mode(settings_snap)  # off | keyword | embedding
+    rag_top_k = int(settings_snap.get("rag_top_k", 6) or 6)
+
+    # Large-document retrieval (RAG): ground each mapped document on its most
+    # relevant passages for this section (query = the resolved section prompt)
+    # instead of the full extract. 'embedding' ranks by vector similarity,
+    # 'keyword' by lexical overlap (no embedding model). One call ranks each
+    # document independently (no bleed, FR-D03). Fail-open per document: anything
+    # not retrieved falls back to full-text grounding, so a run never loses a
+    # source because retrieval was unavailable.
+    hits_by_doc: dict[str, list[dict]] = {}
+    if rag_mode != "off" and job.input_docs:
+        retrieved = resolver.retrieve_chunks(
+            [ref["doc_id"] for ref in job.input_docs], section_prompt, rag_top_k, rag_mode)
+        for entry in (retrieved.get("results") or []):
+            hits_by_doc[entry.get("doc_id")] = entry.get("chunks") or []
+
     grounding = []
+    retrieval_prov: list[dict] = []
     for ref in job.input_docs:
-        # FR-D03: only THIS section's mapped documents are fetched — no bleed
-        text = resolver.fetch_document_text(ref["doc_id"])
-        grounding.append({"doctype_code": ref["doctype_code"], "label": ref["label"],
-                          "text": text})
+        # FR-D03: only THIS section's mapped documents are used — no bleed
+        chunks = hits_by_doc.get(ref["doc_id"])
+        if rag_mode != "off" and chunks:
+            passages = "\n\n".join(
+                f"[passage {c.get('ordinal')}] {c.get('text', '')}" for c in chunks)
+            grounding.append({
+                "doctype_code": ref["doctype_code"],
+                "label": f"{ref['label']} · {len(chunks)} retrieved passage(s)",
+                "text": passages})
+            retrieval_prov.append({
+                "doc_id": ref["doc_id"], "label": ref["label"], "fallback": False,
+                "passages": [{"ordinal": c.get("ordinal"), "score": c.get("score")}
+                             for c in chunks]})
+        else:
+            text = resolver.fetch_document_text(ref["doc_id"])
+            grounding.append({"doctype_code": ref["doctype_code"], "label": ref["label"],
+                              "text": text})
+            if rag_mode != "off":
+                retrieval_prov.append({"doc_id": ref["doc_id"], "label": ref["label"],
+                                       "fallback": True, "passages": []})
 
     # External-intelligence grounding: fetched once per run and snapshotted in
     # resolution["connector_context"] (see create_run). Opted-in sections just
@@ -215,6 +330,26 @@ def _section_payload(run: Run, job: SectionJob) -> dict:
     if prompt_payload.get("uses_external_context"):
         for docs in (resolution.get("connector_context") or {}).values():
             grounding += docs
+
+    # Section interlinking (FR-D08): a dependent section is grounded on the
+    # generated OUTPUT of the sections it depends on — e.g. an executive summary
+    # that consumes every other section. The dependency gate in _claim_next
+    # guarantees those sections are already terminal; only ones that completed
+    # with content contribute (a failed/skipped dependency is silently absent).
+    dep_codes = getattr(job, "depends_on", None) or []
+    if dep_codes:
+        with SessionLocal() as db:
+            rows = {r.section_code: r for r in db.scalars(select(SectionJob).where(
+                SectionJob.run_id == run.id, SectionJob.kind == "initial",
+                SectionJob.section_code.in_(dep_codes),
+                SectionJob.status == "complete")).all()}
+        for code in dep_codes:  # preserve declared dependency order
+            row = rows.get(code)
+            if row and (row.content or "").strip():
+                grounding.append({
+                    "doctype_code": "section_output",
+                    "label": f"Section output · {row.name or code}",
+                    "text": (row.content or "")[:_DEP_CONTENT_CAP]})
 
     global_rules = (resolution.get("global_rules") or {}).get("prompt_text")
     return {
@@ -228,6 +363,9 @@ def _section_payload(run: Run, job: SectionJob) -> dict:
         "fixed_format": job.fixed_format,
         "length_guidance": job.length_guidance or None,
         "model_overrides": prompt_payload.get("model_overrides"),
+        # retrieval provenance (empty unless RAG is on) — surfaced in the trace;
+        # ignored by the genai payload models (extra fields).
+        "retrieval": retrieval_prov,
     }
 
 
@@ -283,6 +421,18 @@ def _run_agent_pipeline(run: Run, job: SectionJob) -> dict:
         trace.append({"agent": agent, "model": resp.get("model", ""),
                       "tokens_in": tokens_in, "tokens_out": tokens_out, **extra})
 
+    # 0 — RETRIEVAL (RAG): record which passages grounded this section so the
+    # trace/audit shows exactly what the pipeline read (answers "why did it use
+    # that passage?"). No token cost — retrieval is embedding + cosine.
+    provenance = base.get("retrieval") or []
+    if provenance:
+        record("retrieval", {"usage": {}},
+               docs=len(provenance),
+               passages=sum(len(p.get("passages") or []) for p in provenance
+                            if not p.get("fallback")),
+               fallbacks=sum(1 for p in provenance if p.get("fallback")),
+               retrieval=provenance)
+
     # 1 — EXTRACTION AGENT (structured, source-attributed facts)
     extraction = resolver.genai_extract({
         "section_prompt": base["layers"]["section_prompt"],
@@ -333,8 +483,12 @@ def _run_agent_pipeline(run: Run, job: SectionJob) -> dict:
             "flags": verdict.get("flags", []), "notes": verdict.get("notes", ""),
             "revisions": revisions}
 
-    # 4 — CONSISTENCY CHECK AGENT (facts + cross-section figures)
-    if pipeline_settings.get("agents_consistency_enabled", True):
+    # 4 — CONSISTENCY CHECK AGENT (facts + cross-section figures). Runs here only
+    # in per_section scope; in post_generation scope it is deferred to the
+    # memo-level reconcile phase (see _run_reconcile), which sees every section.
+    consistency_scope = pipeline_settings.get("consistency_scope", "post_generation")
+    if pipeline_settings.get("agents_consistency_enabled", True) \
+            and consistency_scope == "per_section":
         digest = _other_sections_digest(run.id, job.section_code)
         cons_payload = {"draft": content, "facts": facts,
                         "context": f"{context} {kpi_block}",
@@ -361,11 +515,156 @@ def _run_agent_pipeline(run: Run, job: SectionJob) -> dict:
             "model": generated.get("model", "unknown")}
 
 
+def _revise_section_for_consistency(run: Run, job_id: str, verdict: dict,
+                                    revision_limit: int, agent_rules: dict) -> bool:
+    """Re-draft ONE section flagged by the reconcile agent, feeding its guidance
+    in as summarisation feedback. Bounded by agent_revision_limit (0 disables
+    re-drafting). Returns True if the content actually changed."""
+    if revision_limit < 1:
+        # cannot re-draft — record the unresolved inconsistency for the trailer
+        with SessionLocal() as db:
+            job = db.get(SectionJob, job_id)
+            checks = dict(job.checks or {})
+            checks["consistency"] = {"passed": False, "scope": "post_generation",
+                                     "inconsistencies": verdict.get("issues", []),
+                                     "notes": (verdict.get("guidance") or "")[:300],
+                                     "revisions": 0}
+            job.checks = checks
+            db.commit()
+        return False
+
+    with SessionLocal() as db:
+        job = db.get(SectionJob, job_id)
+        base = _section_payload(run, job)
+        facts = job.facts or []
+        trace = list(job.agent_trace or [])
+        prev_content = job.content or ""
+        tokens_in, tokens_out = job.tokens_in, job.tokens_out
+
+    gen_payload = {**base, "extracted_facts": facts,
+                   "agent_rules": agent_rules.get("summarisation"),
+                   "feedback": {"inconsistencies": verdict.get("issues", []),
+                                "guidance": verdict.get("guidance", "")}}
+    generated = resolver.genai_generate(gen_payload)
+    content = generated.get("content", "")
+    usage = generated.get("usage") or {}
+    ti, to = int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0))
+    log.info("agent-tokens run=%s section=%s agent=%s model=%s in=%d out=%d",
+             run.id, job.section_code, "summarisation:reconcile",
+             generated.get("model", "") or "unknown", ti, to)
+    trace.append({"agent": "summarisation:reconcile", "model": generated.get("model", ""),
+                  "tokens_in": ti, "tokens_out": to, "trigger": "reconcile",
+                  "issues": verdict.get("issues", [])})
+    changed = content.strip() != prev_content.strip()
+
+    with SessionLocal() as db:
+        job = db.get(SectionJob, job_id)
+        if changed:
+            job.content = content
+            job.untraceable = generated.get("untraceable_numbers", job.untraceable)
+        job.agent_trace = trace
+        job.tokens_in = tokens_in + ti
+        job.tokens_out = tokens_out + to
+        checks = dict(job.checks or {})
+        checks["consistency"] = {
+            "passed": True if changed else False,
+            "scope": "post_generation",
+            "inconsistencies": [] if changed else verdict.get("issues", []),
+            "notes": ("re-drafted to resolve cross-section inconsistencies"
+                      if changed else (verdict.get("guidance") or "")[:300]),
+            "revisions": 1 if changed else 0}
+        job.checks = checks
+        db.commit()
+    return changed
+
+
+def _run_reconcile(run_id: str, job_id: str) -> None:
+    """Memo-level cross-section consistency (consistency_scope=post_generation):
+    reconcile every completed section together, then re-draft ONLY the sections
+    the agent flags (bounded by agent_revision_limit). Fail-open end-to-end — any
+    error leaves the drafts untouched and lets the run finalise."""
+    try:
+        with SessionLocal() as db:
+            run = db.get(Run, run_id)
+            complete = list(db.scalars(select(SectionJob).where(
+                SectionJob.run_id == run_id, SectionJob.kind == "initial",
+                SectionJob.status == "complete").order_by(SectionJob.order_no)).all())
+            sec_snap = [{"job_id": s.id, "section_code": s.section_code, "name": s.name,
+                         "content": s.content or "", "figures": _figures_from_facts(s.facts)[:16]}
+                        for s in complete]
+
+        pipeline_settings = run.resolution.get("settings") or {}
+        revision_limit = int(pipeline_settings.get("agent_revision_limit", 1))
+        agent_rules = {role: (entry or {}).get("prompt_text")
+                       for role, entry in (run.resolution.get("agent_rules") or {}).items()}
+
+        verdict = resolver.genai_reconcile({
+            "sections": [{"section_code": s["section_code"], "name": s["name"],
+                          "content": s["content"], "figures": s["figures"]} for s in sec_snap],
+            "agent_rules": agent_rules.get("consistency")})
+        flagged = {v["section_code"]: v for v in (verdict.get("sections") or [])
+                   if not v.get("consistent", True) and (v.get("guidance") or v.get("issues"))}
+
+        revised: list[str] = []
+        by_code = {s["section_code"]: s for s in sec_snap}
+        for code, v in flagged.items():
+            snap = by_code.get(code)
+            if snap and _revise_section_for_consistency(run, snap["job_id"], v,
+                                                        revision_limit, agent_rules):
+                revised.append(code)
+
+        # record a clean consistency verdict on the sections that were NOT flagged
+        # so the audit trail / gap trailer shows the check ran for every section
+        with SessionLocal() as db:
+            for snap in sec_snap:
+                if snap["section_code"] in flagged:
+                    continue
+                job = db.get(SectionJob, snap["job_id"])
+                checks = dict(job.checks or {})
+                checks["consistency"] = {"passed": True, "scope": "post_generation",
+                                         "inconsistencies": [], "revisions": 0,
+                                         "notes": "no cross-section inconsistency"}
+                job.checks = checks
+            db.commit()
+
+        rusage = verdict.get("usage") or {}
+        with SessionLocal() as db:
+            job = db.get(SectionJob, job_id)
+            job.status = "complete"
+            job.error = None
+            job.tokens_in = int(rusage.get("input_tokens", 0))
+            job.tokens_out = int(rusage.get("output_tokens", 0))
+            job.agent_trace = [{"agent": "reconcile", "model": verdict.get("model", ""),
+                                "tokens_in": job.tokens_in, "tokens_out": job.tokens_out,
+                                "flagged": sorted(flagged.keys()), "revised": revised}]
+            job.checks = {"reconcile": {"flagged": sorted(flagged.keys()), "revised": revised,
+                                        "notes": verdict.get("notes", "")}}
+            db.commit()
+        audit.emit(settings, action="run.reconciled", entity_type="run", entity_id=run_id,
+                   case_id=run.case_id, run_id=run_id,
+                   detail={"flagged": sorted(flagged.keys()), "revised": revised,
+                           "sections_seen": len(sec_snap)})
+    except Exception as exc:
+        log.exception("reconcile phase failed for run %s", run_id)
+        with SessionLocal() as db:
+            job = db.get(SectionJob, job_id)
+            job.status = "failed"
+            job.error = str(exc)[:1000]
+            db.commit()
+
+    _after_section(job_id)
+
+
 def process_job(job_id: str) -> None:
     with SessionLocal() as db:
         job = db.get(SectionJob, job_id)
         run = db.get(Run, job.run_id)
     set_correlation_id(run.correlation_id)
+
+    # memo-level cross-section consistency phase (consistency_scope=post_generation)
+    if job.kind == "reconcile":
+        _run_reconcile(run.id, job_id)
+        return
 
     try:
         result = _run_agent_pipeline(run, job)
@@ -418,6 +717,11 @@ def _after_section(job_id: str) -> None:
         job = db.get(SectionJob, job_id)
         run = db.get(Run, job.run_id)
 
+    if job.kind == "reconcile":
+        # the memo-level phase is done (or failed) — settle/hand off the run
+        _maybe_finalize(job.run_id)
+        return
+
     if job.kind == "regeneration" or (run.cam_id and job.status == "complete"):
         # a CAM already exists — the fresh draft joins it: as a new version of
         # the matching section, or as a late-arriving section (a retried
@@ -466,6 +770,33 @@ def _maybe_finalize(run_id: str) -> None:
             complete = [s for s in sections if s.status == "complete"]
             failed = [s for s in sections if s.status == "failed"]
             new_status = "failed" if not complete else ("partial" if failed else "complete")
+
+            # Memo-level consistency phase (consistency_scope=post_generation):
+            # once every section is drafted, run one cross-section reconcile pass
+            # (which re-drafts only the sections it flags) BEFORE handing off the
+            # CAM. Gated so it runs once; a failed reconcile still finalises.
+            settings_snap = run.resolution.get("settings") or {}
+            wants_reconcile = (
+                settings_snap.get("consistency_scope", "post_generation") == "post_generation"
+                and settings_snap.get("agents_consistency_enabled", True))
+            if wants_reconcile and not run.cam_id and len(complete) >= 2:
+                recon = db.scalar(select(SectionJob).where(
+                    SectionJob.run_id == run_id, SectionJob.kind == "reconcile"))
+                if recon is None:
+                    db.add(SectionJob(run_id=run_id, section_code="_reconcile",
+                                      name="Cross-section consistency", order_no=9998,
+                                      kind="reconcile", status="queued"))
+                    db.commit()
+                    return  # defer CAM handoff until the reconcile phase completes
+                if recon.status in ("queued", "running"):
+                    return  # reconcile in flight — wait for it
+                # reconcile terminal: re-read sections (revisions updated content)
+                sections = list(db.scalars(select(SectionJob).where(
+                    SectionJob.run_id == run_id, SectionJob.kind == "initial")).all())
+                complete = [s for s in sections if s.status == "complete"]
+                failed = [s for s in sections if s.status == "failed"]
+                new_status = "failed" if not complete else ("partial" if failed else "complete")
+
             if not complete or run.cam_id:
                 # no CAM handoff to sequence — commit the terminal status now
                 run.status = new_status
@@ -550,7 +881,13 @@ async def worker_loop(stop: asyncio.Event, worker_no: int) -> None:
         try:
             if worker_no == 0:
                 await asyncio.to_thread(_maybe_reap)
-            worked = await asyncio.to_thread(process_next)
+            # runtime concurrency gate: workers indexed at/above the live active
+            # concurrency idle this tick, so the admin setting scales the pool up
+            # and down without a restart. Worker 0 is always active (active >= 1).
+            if worker_no >= await asyncio.to_thread(_active_concurrency):
+                worked = False
+            else:
+                worked = await asyncio.to_thread(process_next)
         except Exception:
             log.exception("worker %d crashed on a job; continuing", worker_no)
             worked = False

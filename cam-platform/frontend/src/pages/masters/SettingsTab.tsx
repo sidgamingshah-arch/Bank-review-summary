@@ -10,8 +10,12 @@ interface Editable {
   agents_materiality_enabled: boolean;
   agents_consistency_enabled: boolean;
   agent_revision_limit: string;
+  consistency_scope: 'per_section' | 'post_generation';
+  worker_concurrency: string;
   connectors_news_enabled: boolean;
   connectors_search_enabled: boolean;
+  rag_mode: 'off' | 'keyword' | 'embedding';
+  rag_top_k: string;
 }
 
 interface LlmForm {
@@ -23,6 +27,14 @@ interface LlmForm {
   timeout_seconds: string;
   auth_scheme: string;
   api_key_env: string;
+  embed_provider: string;
+  embed_model: string;
+  embed_base_url: string;
+  embed_api_key_env: string;
+  azure_endpoint: string;
+  azure_api_version: string;
+  azure_reasoning: boolean;
+  azure_api_key_env: string;
 }
 
 function toForm(s: MasterSettings): Editable {
@@ -32,8 +44,12 @@ function toForm(s: MasterSettings): Editable {
     agents_materiality_enabled: s.agents_materiality_enabled ?? true,
     agents_consistency_enabled: s.agents_consistency_enabled ?? true,
     agent_revision_limit: String(s.agent_revision_limit ?? 1),
+    consistency_scope: (s.consistency_scope as Editable['consistency_scope']) ?? 'post_generation',
+    worker_concurrency: String(s.worker_concurrency ?? 2),
     connectors_news_enabled: s.connectors_news_enabled ?? false,
     connectors_search_enabled: s.connectors_search_enabled ?? false,
+    rag_mode: (s.rag_mode as Editable['rag_mode']) ?? (s.rag_enabled ? 'embedding' : 'off'),
+    rag_top_k: String(s.rag_top_k ?? 6),
   };
 }
 
@@ -47,6 +63,14 @@ function toLlmForm(l: LlmInfo): LlmForm {
     timeout_seconds: String(l.timeout_seconds ?? 120),
     auth_scheme: l.auth_scheme ?? 'Bearer',
     api_key_env: l.api_key_env ?? 'CAM_GENAI_API_KEY',
+    embed_provider: l.embed_provider ?? 'mock',
+    embed_model: l.embed_model ?? '',
+    embed_base_url: l.embed_base_url ?? '',
+    embed_api_key_env: l.embed_api_key_env ?? 'CAM_GENAI_API_KEY',
+    azure_endpoint: l.azure_endpoint ?? '',
+    azure_api_version: l.azure_api_version ?? '2024-10-21',
+    azure_reasoning: l.azure_reasoning ?? false,
+    azure_api_key_env: l.azure_api_key_env ?? 'AZURE_OPENAI_API_KEY',
   };
 }
 
@@ -55,6 +79,8 @@ export function SettingsTab() {
   const [form, setForm] = useState<Editable | null>(null);
   const [llm, setLlm] = useState<LlmForm | null>(null);
   const [keyConfigured, setKeyConfigured] = useState(false);
+  const [embedKeyConfigured, setEmbedKeyConfigured] = useState(false);
+  const [azureKeyConfigured, setAzureKeyConfigured] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingLlm, setSavingLlm] = useState(false);
 
@@ -63,6 +89,8 @@ export function SettingsTab() {
     if (s._llm) {
       setLlm(toLlmForm(s._llm));
       setKeyConfigured(Boolean(s._llm.api_key_configured));
+      setEmbedKeyConfigured(Boolean(s._llm.embed_api_key_configured));
+      setAzureKeyConfigured(Boolean(s._llm.azure_api_key_configured));
     }
   };
 
@@ -101,6 +129,20 @@ export function SettingsTab() {
       toast.error('Agent revision limit must be an integer between 0 and 3');
       return;
     }
+    if (form.rag_top_k.trim() === '') {
+      toast.error('Retrieval passages (top-K) is required');
+      return;
+    }
+    const ragTopK = Number(form.rag_top_k);
+    if (!Number.isInteger(ragTopK) || ragTopK < 1 || ragTopK > 50) {
+      toast.error('Retrieval passages (top-K) must be an integer between 1 and 50');
+      return;
+    }
+    const concurrency = Number(form.worker_concurrency);
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 64) {
+      toast.error('Generation concurrency must be an integer between 1 and 64');
+      return;
+    }
     setSaving(true);
     try {
       const updated = await api.put<MasterSettings>('/api/masters/settings', {
@@ -109,8 +151,12 @@ export function SettingsTab() {
         agents_materiality_enabled: form.agents_materiality_enabled,
         agents_consistency_enabled: form.agents_consistency_enabled,
         agent_revision_limit: revisionLimit,
+        consistency_scope: form.consistency_scope,
+        worker_concurrency: concurrency,
         connectors_news_enabled: form.connectors_news_enabled,
         connectors_search_enabled: form.connectors_search_enabled,
+        rag_mode: form.rag_mode,
+        rag_top_k: ragTopK,
       });
       ingest(updated);
       toast.success('Settings saved');
@@ -142,6 +188,27 @@ export function SettingsTab() {
       toast.error('Base URL is required for the OpenAI-compatible provider');
       return;
     }
+    if (llm.embed_provider === 'openai' && !llm.embed_base_url.trim() && !llm.base_url.trim()) {
+      toast.error('Embedding base URL (or the chat base URL) is required for the OpenAI embedder');
+      return;
+    }
+    if (llm.embed_provider === 'openai' && !llm.embed_model.trim()) {
+      toast.error('Embedding model is required for the OpenAI embedder');
+      return;
+    }
+    const usesAzure = llm.provider === 'azure' || llm.embed_provider === 'azure';
+    if (usesAzure && !llm.azure_endpoint.trim()) {
+      toast.error('Azure OpenAI endpoint is required when a provider is Azure');
+      return;
+    }
+    if (llm.provider === 'azure' && !llm.model.trim()) {
+      toast.error('Model (the Azure chat deployment name) is required for Azure chat');
+      return;
+    }
+    if (llm.embed_provider === 'azure' && !llm.embed_model.trim()) {
+      toast.error('Embedding model (the Azure embed deployment name) is required for Azure embeddings');
+      return;
+    }
     const body: LlmConfigInput = {
       llm_provider: llm.provider,
       genai_model: llm.model.trim() || null,
@@ -151,6 +218,14 @@ export function SettingsTab() {
       genai_timeout_seconds: timeout,
       genai_auth_scheme: llm.auth_scheme,
       genai_api_key_env: llm.api_key_env.trim() || null,
+      genai_embed_provider: llm.embed_provider,
+      genai_embed_model: llm.embed_model.trim() || null,
+      genai_embed_base_url: llm.embed_base_url.trim() || null,
+      genai_embed_api_key_env: llm.embed_api_key_env.trim() || null,
+      azure_openai_endpoint: llm.azure_endpoint.trim() || null,
+      azure_openai_api_version: llm.azure_api_version.trim() || null,
+      azure_openai_api_key_env: llm.azure_api_key_env.trim() || null,
+      azure_openai_reasoning: llm.azure_reasoning,
     };
     setSavingLlm(true);
     try {
@@ -223,18 +298,55 @@ export function SettingsTab() {
             Consistency check agent
           </label>
         </div>
+        <div className="form-grid-2">
+          <div className="field">
+            <label>Revision limit</label>
+            <input
+              className="input slim"
+              type="number"
+              min={0}
+              max={3}
+              step={1}
+              value={form.agent_revision_limit}
+              onChange={(e) => set('agent_revision_limit', e.target.value)}
+            />
+            <div className="hint">How many times a failed gate may send a section back to be redrafted (0–3).</div>
+          </div>
+          <div className="field">
+            <label>When the consistency agent runs</label>
+            <select
+              className="select slim"
+              value={form.consistency_scope}
+              onChange={(e) => set('consistency_scope', e.target.value as Editable['consistency_scope'])}
+            >
+              <option value="post_generation">After all sections (memo-level, targeted revision)</option>
+              <option value="per_section">Per section (during each section&rsquo;s pipeline)</option>
+            </select>
+            <div className="hint">
+              <strong>After all sections</strong>: one cross-section pass sees the whole memo once every
+              section is drafted and re-drafts only the sections it flags. <strong>Per section</strong>:
+              checked as each section is written (sees only siblings finished so far).
+            </div>
+          </div>
+        </div>
+
+        <h3 className="settings-group">Generation performance</h3>
         <div className="field">
-          <label>Revision limit</label>
+          <label>Concurrency (sections drafted in parallel)</label>
           <input
             className="input slim"
             type="number"
-            min={0}
-            max={3}
+            min={1}
+            max={64}
             step={1}
-            value={form.agent_revision_limit}
-            onChange={(e) => set('agent_revision_limit', e.target.value)}
+            value={form.worker_concurrency}
+            onChange={(e) => set('worker_concurrency', e.target.value)}
           />
-          <div className="hint">How many times a failed gate may send a section back to be redrafted (0–3).</div>
+          <div className="hint">
+            How many sections generate at once. Higher finishes a memo faster but sends more
+            concurrent load to the LLM endpoint (mind its rate limits). Applied within a few seconds,
+            no restart; capped by the worker pool size set at deployment (<code>CAM_WORKER_POOL_SIZE</code>).
+          </div>
         </div>
 
         <h3 className="settings-group">External connectors</h3>
@@ -260,6 +372,41 @@ export function SettingsTab() {
           When on, sections that opt in (via their prompt) are enriched with the client-provided
           feed as additional, source-labelled grounding. The endpoint URL is set at deployment; with
           no URL configured a clearly-marked mock feed is used. Off = document-only generation.
+        </div>
+
+        <h3 className="settings-group">Large-document retrieval (RAG)</h3>
+        <div className="form-grid-2">
+          <div className="field">
+            <label>Retrieval mode</label>
+            <select
+              className="select slim"
+              value={form.rag_mode}
+              onChange={(e) => set('rag_mode', e.target.value as Editable['rag_mode'])}
+            >
+              <option value="off">Off — full document text</option>
+              <option value="keyword">Keyword — lexical, no embedding model</option>
+              <option value="embedding">Embedding — semantic / hybrid</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>Passages per document (top-K)</label>
+            <input
+              className="input slim"
+              type="number"
+              min={1}
+              max={50}
+              step={1}
+              value={form.rag_top_k}
+              onChange={(e) => set('rag_top_k', e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="hint">
+          For long documents (e.g. 300-page annual reports), each section is grounded on the most
+          relevant retrieved passages instead of the first slice of full text.{' '}
+          <strong>Keyword</strong> ranks passages lexically (no embedding model needed);{' '}
+          <strong>Embedding</strong> uses semantic / hybrid retrieval (needs the embedding endpoint
+          configured below). Documents are indexed at upload. Off = full-text grounding.
         </div>
 
         <div className="actions-row">
@@ -289,10 +436,11 @@ export function SettingsTab() {
                 <option value="mock">mock (offline, deterministic)</option>
                 <option value="anthropic">anthropic (official SDK)</option>
                 <option value="openai">openai-compatible endpoint</option>
+                <option value="azure">azure openai</option>
               </select>
             </div>
             <div className="field">
-              <label>Model</label>
+              <label>Model {llm.provider === 'azure' ? '(chat deployment name)' : ''}</label>
               <input className="input slim" value={llm.model} onChange={(e) => setL('model', e.target.value)} />
             </div>
           </div>
@@ -338,10 +486,123 @@ export function SettingsTab() {
             </div>
           </div>
 
+          <h3 className="settings-group">
+            Embedding endpoint (for RAG)
+            <span className={`chip ${embedKeyConfigured ? 'chip-green' : 'chip-amber'}`}>
+              key {embedKeyConfigured ? 'configured' : 'not set'}
+            </span>
+          </h3>
+          <div className="form-grid-2">
+            <div className="field">
+              <label>Embedding provider</label>
+              <select
+                className="select slim"
+                value={llm.embed_provider}
+                onChange={(e) => setL('embed_provider', e.target.value)}
+              >
+                <option value="mock">mock (offline, deterministic)</option>
+                <option value="openai">openai-compatible /embeddings</option>
+                <option value="azure">azure openai</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>
+                Embedding model{' '}
+                {llm.embed_provider === 'openai'
+                  ? '(required)'
+                  : llm.embed_provider === 'azure'
+                    ? '(embed deployment name)'
+                    : ''}
+              </label>
+              <input
+                className="input slim"
+                placeholder="text-embedding-3-small"
+                value={llm.embed_model}
+                onChange={(e) => setL('embed_model', e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="form-grid-2">
+            <div className="field">
+              <label>Embedding base URL</label>
+              <input
+                className="input slim"
+                placeholder="(defaults to the chat base URL)"
+                value={llm.embed_base_url}
+                onChange={(e) => setL('embed_base_url', e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label>Embedding API key env var</label>
+              <input
+                className="input slim mono"
+                value={llm.embed_api_key_env}
+                onChange={(e) => setL('embed_api_key_env', e.target.value)}
+              />
+            </div>
+          </div>
+
+          {llm.provider === 'azure' || llm.embed_provider === 'azure' ? (
+            <>
+              <h3 className="settings-group">
+                Azure OpenAI
+                <span className={`chip ${azureKeyConfigured ? 'chip-green' : 'chip-amber'}`}>
+                  key {azureKeyConfigured ? 'configured' : 'not set'}
+                </span>
+              </h3>
+              <div className="form-grid-2">
+                <div className="field">
+                  <label>Azure OpenAI endpoint</label>
+                  <input
+                    className="input slim"
+                    placeholder="https://my-res.openai.azure.com"
+                    value={llm.azure_endpoint}
+                    onChange={(e) => setL('azure_endpoint', e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label>API version</label>
+                  <input
+                    className="input slim mono"
+                    value={llm.azure_api_version}
+                    onChange={(e) => setL('azure_api_version', e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="form-grid-2">
+                <div className="field">
+                  <label>API key env var</label>
+                  <input
+                    className="input slim mono"
+                    value={llm.azure_api_key_env}
+                    onChange={(e) => setL('azure_api_key_env', e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label>Reasoning model (o-series)</label>
+                  <label className="check-pill" style={{ marginTop: 2 }}>
+                    <input
+                      type="checkbox"
+                      checked={llm.azure_reasoning}
+                      onChange={(e) => setL('azure_reasoning', e.target.checked)}
+                    />
+                    Chat deployment is a reasoning model
+                  </label>
+                </div>
+              </div>
+              <div className="hint">
+                Chat and embeddings share this endpoint; the model fields above are the Azure{' '}
+                <strong>deployment names</strong>. Reasoning (o-series) deployments use{' '}
+                <code>max_completion_tokens</code> and omit temperature.
+              </div>
+            </>
+          ) : null}
+
           <div className="hint">
             The API <strong>key value</strong> is never entered or stored here — set it in the
-            environment/vault variable named above (status shown top-right). Saving applies the
-            config to the gateway immediately, no restart required.
+            environment/vault variable named above (status shown top-right). The embedder can use a
+            different backend than chat (e.g. chat on Anthropic, embeddings on an OpenAI-compatible
+            or Azure endpoint). Saving applies the config to the gateway immediately, no restart required.
           </div>
 
           <div className="actions-row">

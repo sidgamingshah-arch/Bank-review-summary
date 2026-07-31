@@ -39,6 +39,27 @@ export function LoginPage() {
 
   return (
     <div className="login-screen">
+      <aside className="login-hero">
+        <div className="login-hero-brand">
+          <span className="brand-mark">CAM</span> Studio
+        </div>
+        <div>
+          <div className="login-hero-headline">Credit memos, drafted by a governed agent pipeline.</div>
+          <p className="login-hero-sub">
+            Turn borrower documents into first-draft Credit Assessment Memos — extraction,
+            summarisation and assurance agents, every figure traced to its source.
+          </p>
+          <div className="login-hero-points">
+            <div className="login-hero-point">✦ <span>Multi-agent generation with a no-fabrication trace check</span></div>
+            <div className="login-hero-point">✦ <span>Large-document retrieval across 300+ page filings</span></div>
+            <div className="login-hero-point">✦ <span>Maker-checker masters &amp; a tamper-evident audit trail</span></div>
+          </div>
+        </div>
+        <div className="login-hero-point muted" style={{ color: 'rgba(255,255,255,0.66)' }}>
+          Bank-grade · human-in-the-loop
+        </div>
+      </aside>
+      <div className="login-pane">
       <div className="login-card">
         <div className="login-brand">
           <span className="brand-mark">CAM</span> Studio
@@ -85,6 +106,7 @@ export function LoginPage() {
             ))}
           </ul>
         </div>
+      </div>
       </div>
     </div>
   );

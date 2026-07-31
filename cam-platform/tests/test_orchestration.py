@@ -39,7 +39,9 @@ RESOLVED_TEMPLATE = {
              "uses_industry_kpis": False}}},
     ],
     "doctype_master_versions": {"audited_financials": 2, "sanction_letter": 1, "project_report": 1},
-    "settings": {"tagging_confidence_threshold": 0.55},
+    # these tests validate the PER-SECTION pipeline; post_generation reconcile is
+    # covered separately in test_reconcile.py
+    "settings": {"tagging_confidence_threshold": 0.55, "consistency_scope": "per_section"},
 }
 
 KPI_SET = {"industry": {"industry_code": "steel", "industry_name": "Steel"},
@@ -101,9 +103,16 @@ def wired(monkeypatch):
         return {"passed": True, "inconsistencies": [], "notes": "aligned",
                 "model": "mock-cam-composer-v1", "usage": {}}
 
+    def fake_reconcile(payload):
+        agent_calls.append(("reconcile", payload))
+        return {"sections": [{"section_code": s["section_code"], "consistent": True,
+                              "issues": [], "guidance": ""} for s in payload["sections"]],
+                "parse_ok": True, "notes": "aligned", "model": "mock-cam-composer-v1", "usage": {}}
+
     monkeypatch.setattr(resolver, "genai_extract", fake_extract)
     monkeypatch.setattr(resolver, "genai_materiality", fake_materiality)
     monkeypatch.setattr(resolver, "genai_consistency", fake_consistency)
+    monkeypatch.setattr(resolver, "genai_reconcile", fake_reconcile)
 
     def fake_create_cam(payload):
         cam = {"id": "cam-1", **payload,
@@ -116,6 +125,10 @@ def wired(monkeypatch):
     monkeypatch.setattr(resolver, "fetch_case", lambda c: CASE)
     monkeypatch.setattr(resolver, "fetch_case_documents", lambda c: DOCS)
     monkeypatch.setattr(resolver, "fetch_document_text", lambda d: FIN_TEXT)
+    # RAG off by default in these fixtures; provide a fake so a rag-enabled test
+    # still runs (empty results -> full-text fallback via fetch_document_text).
+    monkeypatch.setattr(resolver, "retrieve_chunks",
+                        lambda ids, q, k, mode="embedding": {"results": [], "query_embedded": True})
     monkeypatch.setattr(resolver, "fetch_user_preferences", lambda h: PREFS)
     monkeypatch.setattr(resolver, "genai_generate", fake_genai)
     monkeypatch.setattr(resolver, "create_cam", fake_create_cam)

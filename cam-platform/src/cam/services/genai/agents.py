@@ -42,6 +42,19 @@ Reply with ONLY a JSON object, no prose, no code fences:
  "inconsistencies": ["<statement or figure and what it conflicts with>"],
  "notes": "<one short sentence>"}"""
 
+RECONCILE_SYSTEM = """You are the CROSS-SECTION RECONCILIATION AGENT for a bank Credit
+Assessment Memo pipeline. You are given EVERY drafted section of one memo together. Find
+cross-section inconsistencies: the same metric stated with different figures in two sections,
+a claim in one section contradicted by another, or a total that disagrees with its components.
+For EACH section decide whether it must be revised, and if so give specific, actionable guidance
+that names the conflicting figure/claim and the section it conflicts with. Flag ONLY genuine
+conflicts — do not invent issues, and do not flag a section merely for restating a shared figure
+that agrees. Reply with ONLY a JSON object, no prose, no code fences:
+{"sections": [{"section_code": "<code>", "consistent": true|false,
+               "issues": ["<the conflict and the section it conflicts with>"],
+               "guidance": "<how to revise this section to resolve it, or empty>"}],
+ "notes": "<one short sentence>"}"""
+
 
 def role_system(base: str, agent_rules: str | None) -> str:
     if agent_rules:
@@ -77,6 +90,20 @@ def build_consistency_user(draft: str, facts: list[dict],
     return (f"EXTRACTED FACTS FOR THIS SECTION:\n{_facts_table(facts)}\n\n"
             f"KEY FIGURES ALREADY USED BY OTHER SECTIONS:\n{others}\n\n"
             f"DRAFT SECTION:\n<draft>\n{draft}\n</draft>\n\nJSON only.")
+
+
+def build_reconcile_user(sections: list[dict]) -> str:
+    """All drafted sections in one prompt for the memo-level reconciliation pass.
+    Each section's figures (from its extracted facts) are listed alongside its
+    draft so the agent can spot cross-section figure contradictions."""
+    blocks = []
+    for s in sections:
+        figs = ", ".join(str(f) for f in (s.get("figures") or [])[:16]) or "(none)"
+        blocks.append(f"### SECTION {s.get('section_code')} — {s.get('name', '')}\n"
+                      f"KEY FIGURES: {figs}\n"
+                      f"<draft>\n{(s.get('content') or '')[:6000]}\n</draft>")
+    return ("ALL DRAFTED SECTIONS OF THIS MEMO:\n\n" + "\n\n".join(blocks)
+            + "\n\nReturn a verdict for EVERY section_code above. JSON only.")
 
 
 def parse_agent_json(raw: str, required_key: str) -> dict | None:
@@ -152,3 +179,17 @@ def mock_consistency(request: dict) -> dict:
     return {"passed": not inconsistencies, "inconsistencies": inconsistencies,
             "notes": "draft agrees with the extracted facts" if not inconsistencies
                      else "draft carries figures outside the extracted facts"}
+
+
+def mock_reconcile(request: dict) -> dict:
+    """Deterministic offline stand-in for the cross-section reconciliation agent.
+
+    The mock cannot genuinely reason across free-text sections, and inventing
+    inconsistencies would trigger needless revisions on every offline run — so it
+    reports every section consistent (the fail-safe: nothing is re-drafted). Real
+    providers perform the actual cross-section reconciliation; tests exercise the
+    revision path by stubbing the reconcile verdict directly."""
+    sections = request.get("sections") or []
+    return {"sections": [{"section_code": s.get("section_code"), "consistent": True,
+                          "issues": [], "guidance": ""} for s in sections],
+            "notes": "no cross-section inconsistencies detected (mock)"}
