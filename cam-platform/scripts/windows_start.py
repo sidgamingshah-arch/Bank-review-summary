@@ -27,6 +27,9 @@ VENV = ROOT / ".venv"
 DATA_DIR = ROOT / ".data-dev"
 GATEWAY = "http://localhost:8080"
 IS_WINDOWS = os.name == "nt"
+# every service must answer /healthz before we seed (the gateway comes up before
+# its backends, so polling only the gateway would seed against a half-ready stack)
+SERVICE_PORTS = [8080, 8101, 8102, 8103, 8104, 8105, 8106, 8107, 8108]
 
 
 def venv_python() -> Path:
@@ -75,15 +78,22 @@ def build_frontend() -> None:
     _run([npm, "run", "build"], cwd=str(fe))
 
 
-def wait_healthy(timeout: float = 90.0) -> bool:
+def _port_healthy(port: int) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def wait_healthy(timeout: float = 150.0) -> bool:
+    """Return True once every service (not just the gateway) answers /healthz."""
     deadline = time.monotonic() + timeout
+    pending = list(SERVICE_PORTS)
     while time.monotonic() < deadline:
-        try:
-            with urllib.request.urlopen(f"{GATEWAY}/healthz", timeout=2) as resp:
-                if resp.status == 200:
-                    return True
-        except Exception:
-            pass
+        pending = [p for p in pending if not _port_healthy(p)]
+        if not pending:
+            return True
         time.sleep(0.5)
     return False
 
@@ -102,7 +112,12 @@ def seed_first_run(py: Path) -> None:
 
 
 def main() -> int:
-    print("CAM Studio — local launcher\n" + "-" * 30)
+    # legacy Windows consoles default to a non-UTF-8 code page; make our glyphs safe
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    print("CAM Studio - local launcher\n" + "-" * 30)
     py = ensure_venv()
     build_frontend()
 

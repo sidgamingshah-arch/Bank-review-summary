@@ -9,16 +9,19 @@ REM ============================================================================
 setlocal
 cd /d "%~dp0"
 
-REM Prefer the Python launcher (py), fall back to python on PATH.
+REM Prefer the Python launcher (py); fall back to python on PATH. Each candidate is
+REM verified to actually run a real Python 3.10+ so the Microsoft Store "python"
+REM execution-alias stub (which otherwise opens the Store) is rejected.
 set "PYEXE="
-where py >nul 2>nul && set "PYEXE=py -3"
+py -3 -c "import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)" >nul 2>nul && set "PYEXE=py -3"
 if not defined PYEXE (
-  where python >nul 2>nul && set "PYEXE=python"
+  python -c "import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)" >nul 2>nul && set "PYEXE=python"
 )
 if not defined PYEXE (
   echo(
-  echo   Python 3.11+ was not found on PATH.
-  echo   Install it from https://www.python.org/downloads/ ^(tick "Add python.exe to PATH"^) and re-run.
+  echo   Python 3.10+ was not found ^(or 'python' points to the Microsoft Store stub^).
+  echo   Install it from https://www.python.org/downloads/ ^(tick "Add python.exe to PATH"^),
+  echo   open a NEW terminal / re-open this folder, and run this file again.
   echo(
   pause
   exit /b 1

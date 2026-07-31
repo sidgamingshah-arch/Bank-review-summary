@@ -853,26 +853,42 @@ def _notify_run(run: Run, status: str, cam_id: str | None) -> None:
     _email_run_complete(run, kind, title, body)
 
 
+# tests set this True so completion emails dispatch synchronously and can be asserted
+_EMAIL_DISPATCH_SYNC = False
+
+
 def _email_run_complete(run: Run, kind: str, title: str, body: str) -> None:
-    """Also email the run's creator (best-effort, gated by the 'email_notifications'
-    master toggle). Sent inline but bounded by the SMTP timeout; any failure is
-    logged and never breaks finalisation. When no SMTP host is configured the
-    mailer logs the message instead of sending (dev/no-op)."""
+    """Email the run's creator (best-effort, gated by the 'email_notifications'
+    master toggle). The blocking work — the contact lookup and the SMTP send — runs
+    in a background daemon thread, so it never holds the finalize lock or stalls the
+    worker (a slow/unreachable relay can't delay other runs). When no SMTP host is
+    configured the mailer logs the message instead of sending (dev/no-op)."""
     if not _email_enabled():
         return
+    # snapshot the fields the thread needs so it never touches the ORM object off-session
+    job = (run.created_by, run.id, kind, title, body)
+    if _EMAIL_DISPATCH_SYNC:
+        _send_completion_email(*job)
+    else:
+        threading.Thread(target=_send_completion_email, args=job,
+                         name=f"cam-email-{run.id}", daemon=True).start()
+
+
+def _send_completion_email(created_by: str, run_id: str, kind: str,
+                           title: str, body: str) -> None:
     try:
-        contact = resolver.fetch_user_contact(run.created_by) or {}
+        contact = resolver.fetch_user_contact(created_by) or {}
         to = (contact.get("email") or "").strip()
         if not to:
             return
-        name = contact.get("display_name") or run.created_by
-        link = f"{settings.app_base_url.rstrip('/')}/runs/{run.id}"
+        name = contact.get("display_name") or created_by
+        link = f"{settings.app_base_url.rstrip('/')}/runs/{run_id}"
         text = (f"Hello {name},\n\n{body}\n\nOpen the memo: {link}\n\n"
                 "— CAM Studio (automated notification)")
         mail.send_email(settings, to, f"CAM Studio · {title}", text,
                         _completion_email_html(name, kind, title, body, link))
     except Exception:  # pragma: no cover - email is best-effort
-        log.exception("completion email failed for run %s", run.id)
+        log.exception("completion email failed for run %s", run_id)
 
 
 def _completion_email_html(name: str, kind: str, title: str, body: str, link: str) -> str:

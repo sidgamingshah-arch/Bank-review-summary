@@ -62,7 +62,11 @@ class Stack:
         if wait:
             self.wait_healthy()
 
-    def wait_healthy(self, timeout: float = 45.0) -> None:
+    def wait_healthy(self, timeout: float | None = None) -> None:
+        # generous default (env-overridable) so a cold first start on a slow/AV-scanned
+        # Windows box isn't torn down prematurely by the inner gate
+        if timeout is None:
+            timeout = float(os.environ.get("CAM_STACK_HEALTH_TIMEOUT", "120"))
         deadline = time.monotonic() + timeout
         with httpx.Client(timeout=2.0) as client:
             for name, _, port in SERVICES:

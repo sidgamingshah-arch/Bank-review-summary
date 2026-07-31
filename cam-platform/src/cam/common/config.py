@@ -141,7 +141,10 @@ class Settings(BaseSettings):
     # Base URL the SPA is served from (the single-origin gateway) — used to build
     # deep links back to a run in notification emails.
     app_base_url: str = "http://localhost:8080"
-    # Fallback for the runtime 'email_notifications' master toggle when it is unset.
+    # Fallback for the runtime 'email_notifications' master toggle. The shipped
+    # default is ON via master DEFAULT_SETTINGS; this env-layer fallback is
+    # intentionally OFF so a master-config outage fails safe (no surprise mail when
+    # the toggle can't be read) rather than fail-open.
     email_notifications: bool = False
 
     def resolved_db_url(self) -> str:

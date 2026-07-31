@@ -66,10 +66,23 @@ def test_starttls_send_logs_in_and_never_stores_the_password(monkeypatch):
     sent = _FakeSMTP.last
     assert sent.started_tls is True
     assert sent.logged == ("mailer", "s3cret")
-    assert sent.sent["To"] == "analyst@bank.example"
-    assert sent.sent["Subject"] == "Subj"
+    msg = sent.sent
+    assert msg["To"] == "analyst@bank.example"
+    assert msg["Subject"] == "Subj"
+    assert msg["From"] == "CAM <cam@bank.example>" and msg["Date"]
+    # both a plain-text and an HTML alternative part are attached
+    assert msg.is_multipart()
+    assert "text/html" in [p.get_content_type() for p in msg.iter_parts()]
     # NFR-06: the password is only ever read from the env var, never on Settings
     assert not hasattr(s, "smtp_password")
+
+
+def test_plain_connection_does_not_starttls(monkeypatch):
+    monkeypatch.setattr(mail.smtplib, "SMTP", _FakeSMTP)
+    s = _settings(smtp_host="smtp.bank", smtp_port=25, smtp_starttls=False, smtp_ssl=False)
+    assert mail.send_email(s, "x@bank.example", "S", "t") == "sent"
+    assert _FakeSMTP.last.started_tls is False
+    assert _FakeSMTP.last.logged is None  # no username -> no login attempt
 
 
 def test_ssl_transport_used_when_configured(monkeypatch):
@@ -128,3 +141,39 @@ def test_no_email_when_creator_has_no_address(wired, analyst_headers, monkeypatc
         _create_run(c, analyst_headers)
         worker.drain()
     assert sent == []
+
+
+def test_failed_run_email_construction(monkeypatch):
+    """The 'run_failed' path builds a subject/body and a deep link (unit-level, so
+    we don't need to orchestrate a fully-failing run)."""
+    monkeypatch.setattr(worker.resolver, "fetch_user_contact",
+                        lambda u: {"email": "x@bank.example", "display_name": "X"})
+    captured = {}
+    monkeypatch.setattr(worker.mail, "send_email",
+                        lambda settings, to, subject, text, html=None:
+                        captured.update(to=to, subject=subject, text=text, html=html) or "sent")
+    worker._send_completion_email("analyst1", "run-42", "run_failed",
+                                  "CAM generation failed — Acme", "The run produced no sections.")
+    assert captured["to"] == "x@bank.example"
+    assert "failed" in captured["subject"].lower()
+    assert "/runs/run-42" in captured["text"]
+
+
+def test_email_enabled_reads_toggle_and_fails_open(monkeypatch):
+    worker._email_cache["value"] = None
+    monkeypatch.setattr(worker.resolver, "fetch_settings", lambda: {"email_notifications": True})
+    assert worker._email_enabled() is True
+
+    worker._email_cache["value"] = None
+    monkeypatch.setattr(worker.resolver, "fetch_settings", lambda: {"email_notifications": False})
+    assert worker._email_enabled() is False
+
+    # fail-open to the env default (False) when master-config raises
+    worker._email_cache["value"] = None
+
+    def _boom():
+        raise RuntimeError("master-config down")
+
+    monkeypatch.setattr(worker.resolver, "fetch_settings", _boom)
+    assert worker._email_enabled() is False
+    worker._email_cache["value"] = None

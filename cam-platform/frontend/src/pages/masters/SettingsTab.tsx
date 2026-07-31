@@ -142,6 +142,10 @@ export function SettingsTab() {
       toast.error('Retrieval passages (top-K) must be an integer between 1 and 50');
       return;
     }
+    if (form.worker_concurrency.trim() === '' || form.max_concurrent_runs.trim() === '') {
+      toast.error('Generation concurrency and concurrent runs are required');
+      return;
+    }
     const concurrency = Number(form.worker_concurrency);
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 64) {
       toast.error('Generation concurrency must be an integer between 1 and 64');

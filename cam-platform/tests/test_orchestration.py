@@ -134,6 +134,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(resolver, "fetch_settings", lambda: {})
     worker._runs_cache["value"] = None  # reset the concurrency-cap cache per test
     worker._email_cache["value"] = None  # and the email-toggle cache
+    monkeypatch.setattr(worker, "_EMAIL_DISPATCH_SYNC", True)  # deterministic email in tests
     monkeypatch.setattr(resolver, "fetch_user_preferences", lambda h: PREFS)
     monkeypatch.setattr(resolver, "genai_generate", fake_genai)
     monkeypatch.setattr(resolver, "create_cam", fake_create_cam)
