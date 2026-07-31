@@ -124,6 +124,8 @@ class SettingsPatch(BaseModel):
     # worker pool ceiling by the orchestration worker; the upper bound here is a
     # sanity cap only.
     worker_concurrency: int | None = Field(default=None, ge=1, le=64)
+    # Run-level admission queue: how many runs generate at once (FIFO; the rest queue).
+    max_concurrent_runs: int | None = Field(default=None, ge=1, le=64)
     connectors_search_enabled: bool | None = None
     connectors_news_enabled: bool | None = None
     rag_mode: Literal["off", "keyword", "embedding"] | None = None

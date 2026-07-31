@@ -123,7 +123,7 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
   `scripts/masters_bundle.py template|bulk-upload masters.xlsx`.
 - `GET /api/masters/settings` → `{tagging_confidence_threshold, tagging_mode,
   agents_materiality_enabled, agents_consistency_enabled, agent_revision_limit,
-  consistency_scope, worker_concurrency,
+  consistency_scope, worker_concurrency, max_concurrent_runs,
   connectors_search_enabled, connectors_news_enabled, rag_mode, rag_top_k,
   _llm:{provider, model, base_url, max_tokens, api_key_env, api_key_configured,
   embed_provider, embed_model, embed_base_url, embed_dim, embed_api_key_env,
@@ -138,6 +138,8 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
   section is drafted (re-drafting only the sections it flags). `worker_concurrency`
   (1–64) is the number of sections drafted in parallel; it applies at runtime (clamped
   to `CAM_WORKER_POOL_SIZE`, the pool spawned at startup) without a restart.
+  `max_concurrent_runs` (1–64, default 4) is how many runs generate at once — bursts
+  beyond it queue and start automatically as running runs finish.
 - `GET /api/masters/llm-config` (`masters:read`) → the admin-set LLM overrides (only keys that
   were set; absent → the gateway's env default). `PUT /api/masters/llm-config` (business_admin)
   `{llm_provider?: mock|anthropic|openai, genai_model?, genai_base_url?, genai_temperature?,
@@ -278,12 +280,20 @@ Accepted formats v1: `.pdf .docx .xlsx .csv .txt` · max 25 MB (or doctype `file
 
 - `POST /api/runs` `{case_id, template_key, preference_override?: PreferenceProfileInput, proceed_with_gaps?: bool}`
   → `202 Run` (snapshots ResolvedTemplate versions, KPI set version, preference profile,
-  computes gaps; refuses `conflict` if gaps exist and `proceed_with_gaps` is not true)
+  computes gaps; refuses `conflict` if gaps exist and `proceed_with_gaps` is not true).
+  Bursts are ACCEPTED and QUEUED — a run starts `queued` and the worker admits it when a
+  concurrency slot frees (see §5); submission is never rejected with `429` (FR-D07).
 - `GET /api/runs/{id}` → `Run` (poll target) · `GET /api/runs?case_id=` → `[RunSummary]`
 - `POST /api/runs/{id}/sections/{section_code}/retry` → 202 (failed → queued; FR-D02)
 - `POST /api/runs/{id}/sections/{section_code}/regenerate` → 202 (complete → new generation;
   on success POSTs the new content to output service as a new section version, source `regeneration`)
 - `GET /api/runs/usage/summary` (business_admin/auditor) → `{runs, sections, tokens_in, tokens_out, retries, regenerations}`
+
+In-app notifications (the run creator is told when generation finishes):
+- `GET /api/notifications?unread_only=&limit=` → `{notifications: [{id, kind, title, body,
+  run_id, case_id, cam_id, read, created_at}], unread}` — the caller's own, newest first.
+- `POST /api/notifications/{id}/read` → mark one read (404 if it isn't the caller's).
+- `POST /api/notifications/read-all` → `{marked}`.
 
 ```
 Run = {id, case_id, template_key, status: "queued"|"running"|"complete"|"partial"|"failed",
@@ -316,8 +326,15 @@ a fixed in-process asyncio worker pool spawned at `CAM_WORKER_POOL_SIZE` (defaul
 `CAM_WORKER_ENABLED=false` to disable the loop and drive `worker.drain()` synchronously, as
 the tests do). **Active** concurrency is the runtime `worker_concurrency` master setting
 (default 2), clamped to the pool size and applied within a few seconds without a restart —
-workers indexed at/above the active count idle. Per-user active-run cap
-`CAM_MAX_ACTIVE_RUNS_PER_USER` (default 2) → `429 rate_limited` (FR-D07).
+workers indexed at/above the active count idle.
+
+Run-level admission queue (FR-D07): a burst of `POST /api/runs` is all accepted (each run
+starts `queued`); the worker promotes queued runs to `running` FIFO while fewer than
+`max_concurrent_runs` (runtime master setting, default 4) are running, with a per-user
+fairness cap `CAM_MAX_ACTIVE_RUNS_PER_USER` (default 2) so one user's burst can't take every
+slot. A run's sections become claimable only once its run is admitted. On completion a slot
+frees and the next queued run starts automatically. When a run reaches a terminal state its
+creator gets an in-app notification.
 
 Section interlinking (FR-D08): a template section may declare `depends_on: [codes]`
 (or `depends_on_all: true`, the executive-summary case). A section job is not claimed until

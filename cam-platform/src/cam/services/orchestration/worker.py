@@ -20,7 +20,7 @@ from cam.common.correlation import set_correlation_id
 from cam.common.db import utcnow
 
 from . import resolver
-from .models import Run, SectionJob
+from .models import Notification, Run, SectionJob
 
 log = logging.getLogger("cam.orchestration.worker")
 
@@ -74,6 +74,52 @@ def _active_concurrency() -> int:
     _active_cache["value"] = val
     _active_cache["at"] = now
     return val
+
+
+_runs_cache: dict = {"value": None, "at": 0.0}
+
+
+def _max_concurrent_runs() -> int:
+    """Live run-level concurrency cap (master setting 'max_concurrent_runs'),
+    cached briefly. Fail-open to the environment default."""
+    default = int(getattr(settings, "max_concurrent_runs", 4) or 4)
+    now = time.monotonic()
+    if _runs_cache["value"] is not None and now - _runs_cache["at"] < _ACTIVE_TTL_SECONDS:
+        return _runs_cache["value"]
+    val = default
+    try:
+        val = int(resolver.fetch_settings().get("max_concurrent_runs", default))
+    except Exception:  # fail-open
+        val = default
+    val = max(1, val)
+    _runs_cache["value"] = val
+    _runs_cache["at"] = now
+    return val
+
+
+def _admit_pending_runs(db) -> None:
+    """Run-level admission queue (FR-D07): a burst of submitted runs is all
+    accepted as 'queued'; here we promote them to 'running' FIFO while fewer than
+    max_concurrent_runs are running, with a per-user fairness cap so one user's
+    burst can't occupy every slot. Caller commits. Sections of a run become
+    claimable only once its run is admitted (running)."""
+    from collections import Counter
+
+    running = list(db.scalars(select(Run).where(Run.status == "running")).all())
+    slots = _max_concurrent_runs() - len(running)
+    if slots <= 0:
+        return
+    per_user_cap = max(1, int(getattr(settings, "max_active_runs_per_user", 2) or 2))
+    per_user = Counter(r.created_by for r in running)
+    for run in db.scalars(select(Run).where(Run.status == "queued")
+                          .order_by(Run.created_at)).all():
+        if slots <= 0:
+            break
+        if per_user[run.created_by] >= per_user_cap:
+            continue  # fairness: this user already holds its share of slots
+        run.status = "running"
+        per_user[run.created_by] += 1
+        slots -= 1
 
 
 def render_kpi_block(kpis: list[dict], section_code: str) -> str:
@@ -169,14 +215,20 @@ def _claim_next() -> str | None:
     from sqlalchemy import or_
 
     with _claim_lock, SessionLocal() as db:
+        # run-level admission queue: promote queued runs into any free concurrency
+        # slots before claiming, so a burst drains at a controlled rate.
+        _admit_pending_runs(db)
+        db.flush()  # sessions are autoflush=False — make admissions visible below
+        # sections are claimable only for ADMITTED (running) runs; regeneration
+        # jobs belong to already-finalised runs so they are always claimable.
         candidates = list(db.scalars(
             select(SectionJob).join(Run, SectionJob.run_id == Run.id)
             .where(SectionJob.status == "queued",
-                   or_(Run.status.in_(["queued", "running"]),
-                       SectionJob.kind.in_(["regeneration", "reconcile"])))
+                   or_(Run.status == "running", SectionJob.kind == "regeneration"))
             .order_by(SectionJob.order_no)
             .with_for_update(skip_locked=True, of=SectionJob).limit(200)).all())
         if not candidates:
+            db.commit()  # persist any run admissions even when nothing is claimable yet
             return None
 
         # per-run map of initial-section statuses, built once and reused
@@ -201,14 +253,13 @@ def _claim_next() -> str | None:
                 job = cand
                 break
         if not job:
+            db.commit()  # persist any run admissions even when nothing is claimable
             return None
 
+        # the run is already 'running' (admission promoted it); just claim the job
         job.status = "running"
         job.attempts += 1
         job.claimed_at = utcnow()
-        run = db.get(Run, job.run_id)
-        if run.status == "queued":
-            run.status = "running"
         db.commit()
         return job.id
 
@@ -755,6 +806,31 @@ def _after_section(job_id: str) -> None:
     _maybe_finalize(run.id)
 
 
+def _notify_run(run: Run, status: str, cam_id: str | None) -> None:
+    """In-app notification to the run's creator that generation finished
+    (FR-D07 addendum). Best-effort: a notification failure never breaks a run."""
+    kind = {"complete": "run_complete", "partial": "run_partial"}.get(status, "run_failed")
+    borrower = run.borrower_name or "the borrower"
+    if status == "failed":
+        title, body = (f"CAM generation failed — {borrower}",
+                       "The run produced no sections. Open the run to retry.")
+    elif status == "partial":
+        title, body = (f"CAM ready with gaps — {borrower}",
+                       "Generation finished; some sections failed — see the memo's "
+                       "data-gap trailer.")
+    else:
+        title, body = (f"CAM ready — {borrower}",
+                       "Your Credit Assessment Memo has finished generating and is "
+                       "ready to review.")
+    try:
+        with SessionLocal() as db:
+            db.add(Notification(username=run.created_by, kind=kind, title=title, body=body,
+                                run_id=run.id, case_id=run.case_id, cam_id=cam_id))
+            db.commit()
+    except Exception:  # pragma: no cover - notifications are best-effort
+        log.exception("failed to write completion notification for run %s", run.id)
+
+
 def _maybe_finalize(run_id: str) -> None:
     """When every initial section is terminal, settle the run status and hand
     the CAM (with its gap trailer) to the output service exactly once."""
@@ -807,6 +883,7 @@ def _maybe_finalize(run_id: str) -> None:
                        case_id=run.case_id, run_id=run.id,
                        detail={"status": "failed", "master_versions": run.master_versions})
             resolver.update_case_status(run.case_id, "open")
+            _notify_run(run, "failed", None)
             return
 
         if run.cam_id:
@@ -857,6 +934,8 @@ def _maybe_finalize(run_id: str) -> None:
                            "agent_checks": {s.section_code: {k: v.get("passed")
                                                              for k, v in (s.checks or {}).items()}
                                             for s in sections if s.checks}})
+        # notify the run's creator that their memo is ready (in-app)
+        _notify_run(run, run.status, cam_id)
 
 
 def process_next() -> bool:

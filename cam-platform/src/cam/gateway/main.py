@@ -36,6 +36,7 @@ DEFAULT_ROUTES: dict[str, str] = {
     "/api/documents": "http://localhost:8103",
     "/api/tagging": "http://localhost:8104",
     "/api/runs": "http://localhost:8105",
+    "/api/notifications": "http://localhost:8105",
     "/api/genai": "http://localhost:8106",
     "/api/cams": "http://localhost:8107",
     "/api/audit": "http://localhost:8108",
@@ -50,6 +51,7 @@ def routes() -> dict[str, str]:
         "/api/auth": "CAM_ROUTE_AUTH", "/api/masters": "CAM_ROUTE_MASTERS",
         "/api/cases": "CAM_ROUTE_DOCUMENT", "/api/documents": "CAM_ROUTE_DOCUMENT",
         "/api/tagging": "CAM_ROUTE_TAGGING", "/api/runs": "CAM_ROUTE_ORCHESTRATION",
+        "/api/notifications": "CAM_ROUTE_ORCHESTRATION",
         "/api/genai": "CAM_ROUTE_GENAI", "/api/cams": "CAM_ROUTE_OUTPUT",
         "/api/audit": "CAM_ROUTE_AUDIT",
     }

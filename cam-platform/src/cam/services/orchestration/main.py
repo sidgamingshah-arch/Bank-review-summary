@@ -21,7 +21,7 @@ from cam.common.rbac import is_own_scoped
 from cam.common.security import Principal, make_auth_dependencies
 
 from . import resolver, worker
-from .models import Base, Run, SectionJob
+from .models import Base, Notification, Run, SectionJob
 
 settings = get_settings("orchestration")
 engine = make_engine(settings.resolved_db_url())
@@ -104,14 +104,9 @@ def create_run(body: RunCreate, request: Request,
     if is_own_scoped(principal.roles) and case.get("created_by") != principal.username:
         raise ApiError.forbidden("not your case")
 
-    with SessionLocal() as db:
-        active = db.scalar(select(func.count()).select_from(Run).where(
-            Run.created_by == principal.username, Run.status.in_(["queued", "running"]))) or 0
-    if active >= settings.max_active_runs_per_user:
-        raise ApiError(429, "rate_limited",
-                       f"active-run limit reached ({settings.max_active_runs_per_user}); "
-                       "wait for a run to finish (FR-D07)")
-
+    # FR-D07: bursts are ACCEPTED and QUEUED, not rejected. The run is created
+    # 'queued' and the worker's run-level admission promotes it to 'running' when a
+    # concurrency slot frees (max_concurrent_runs, with a per-user fairness cap).
     resolved = resolver.fetch_resolved_template(body.template_key)
     kpi = resolver.fetch_kpi_set(case.get("industry_code", "")) if case.get("industry_code") else {}
     documents = resolver.fetch_case_documents(body.case_id)
@@ -244,6 +239,47 @@ def usage_summary(principal: Principal = Depends(require("audit:read"))):
             "retries": sum(max(0, j.attempts - 1) for j in jobs if j.kind == "initial"),
             "regenerations": sum(1 for j in jobs if j.kind == "regeneration"),
             "failed_sections": sum(1 for j in section_jobs if j.status == "failed")}
+
+
+# ---- in-app notifications (run completion) --------------------------------
+
+@app.get("/api/notifications")
+def list_notifications(unread_only: bool = False, limit: int = 50,
+                       principal: Principal = Depends(current_principal)):
+    """The caller's own notifications, newest first, with the unread count."""
+    with SessionLocal() as db:
+        q = select(Notification).where(Notification.username == principal.username)
+        if unread_only:
+            q = q.where(Notification.read.is_(False))
+        rows = list(db.scalars(
+            q.order_by(Notification.created_at.desc()).limit(max(1, min(limit, 200)))).all())
+        unread = db.scalar(select(func.count()).select_from(Notification).where(
+            Notification.username == principal.username, Notification.read.is_(False))) or 0
+    return {"notifications": [n.to_dict() for n in rows], "unread": unread}
+
+
+@app.post("/api/notifications/read-all")
+def mark_all_notifications_read(principal: Principal = Depends(current_principal)):
+    with SessionLocal() as db:
+        rows = list(db.scalars(select(Notification).where(
+            Notification.username == principal.username,
+            Notification.read.is_(False))).all())
+        for n in rows:
+            n.read = True
+        db.commit()
+    return {"status": "ok", "marked": len(rows)}
+
+
+@app.post("/api/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: str,
+                           principal: Principal = Depends(current_principal)):
+    with SessionLocal() as db:
+        n = db.get(Notification, notification_id)
+        if not n or n.username != principal.username:
+            raise ApiError.not_found("notification")
+        n.read = True
+        db.commit()
+    return {"status": "ok"}
 
 
 @app.get("/api/runs")

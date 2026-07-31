@@ -378,6 +378,23 @@ export interface RunSection {
   agent_trace?: AgentTraceStep[];
 }
 
+export interface AppNotification {
+  id: string;
+  kind: 'run_complete' | 'run_partial' | 'run_failed' | string;
+  title: string;
+  body: string;
+  run_id: string | null;
+  case_id: string | null;
+  cam_id: string | null;
+  read: boolean;
+  created_at: string;
+}
+
+export interface NotificationsResponse {
+  notifications: AppNotification[];
+  unread: number;
+}
+
 export interface RunGap {
   doctype_code: string;
   reason: string;

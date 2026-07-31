@@ -94,6 +94,9 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # Runtime-tunable; clamped to the worker pool ceiling (CAM_WORKER_POOL_SIZE)
     # and applied without a restart.
     "worker_concurrency": 2,
+    # Run-level admission queue: how many runs generate at once. Bursts beyond
+    # this queue and start automatically (FIFO) as running runs finish.
+    "max_concurrent_runs": 4,
     # external grounding connectors (client-provided, integrated). Off by
     # default so runs work exactly as before until an admin enables them; a
     # section only consults a connector when its prompt sets uses_external_context.

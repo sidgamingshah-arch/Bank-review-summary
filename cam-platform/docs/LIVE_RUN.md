@@ -165,6 +165,13 @@ Three runtime levers in *Masters → Settings* (no restart needed):
   (`CAM_WORKER_POOL_SIZE`, default 8); raise the pool to allow higher live
   concurrency. Higher = faster, but more concurrent load on your LLM endpoint —
   keep it under the endpoint's rate/concurrency limit.
+- **Run queue — how many memos at once** (`max_concurrent_runs`, default 4). When
+  several analysts submit runs together, every request is accepted and queued; at
+  most this many generate concurrently (FIFO) and the rest start automatically as
+  slots free, with a per-user fairness cap (`CAM_MAX_ACTIVE_RUNS_PER_USER`) so one
+  person's burst can't monopolise the queue. Raise it for more throughput, lower it
+  to protect a rate-limited endpoint. When a run finishes, its creator gets an
+  in-app notification (the bell in the header) linking straight to the memo.
 - **When the consistency agent runs** (`consistency_scope`). *Assurance agents →
   When the consistency agent runs*:
   - **After all sections** (default) — one memo-level pass sees every section

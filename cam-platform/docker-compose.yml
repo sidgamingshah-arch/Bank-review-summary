@@ -137,6 +137,10 @@ services:
       # runtime 'worker_concurrency' master setting, clamped to this.
       CAM_WORKER_POOL_SIZE: "8"
       CAM_WORKER_CONCURRENCY: "2"
+      # run-level admission queue: how many runs generate at once (runtime setting);
+      # per-user fairness cap so one user's burst can't take every slot
+      CAM_MAX_CONCURRENT_RUNS: "4"
+      CAM_MAX_ACTIVE_RUNS_PER_USER: "2"
 
   genai:
     <<: *service
