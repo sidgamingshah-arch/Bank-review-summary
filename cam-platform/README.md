@@ -16,7 +16,16 @@ Built against the v0.1 BRD. Requirement-by-requirement status:
 **[docs/architecture.md](docs/architecture.md)** · API contracts:
 **[docs/contracts.md](docs/contracts.md)** · decisions: **[docs/adr/](docs/adr/)**.
 
-## Quickstart (no external dependencies)
+## Quickstart
+
+**Windows — one click.** Double-click **`start-windows.bat`**. On first run it creates
+the Python virtualenv, builds the web UI, seeds demo data, starts every service, and
+opens your browser at http://localhost:8080 (the gateway serves the SPA, so it's a
+single origin — no separate dev server). Subsequent runs skip setup and start in
+seconds. Prerequisites: Python 3.11+ (required) and Node.js 18+ (for the UI). Close
+the window or press Ctrl-C to stop. macOS/Linux: `python scripts/windows_start.py`.
+
+**Make (developers, no external dependencies):**
 
 ```bash
 make install     # venv + backend deps

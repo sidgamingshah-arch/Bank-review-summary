@@ -126,6 +126,8 @@ class SettingsPatch(BaseModel):
     worker_concurrency: int | None = Field(default=None, ge=1, le=64)
     # Run-level admission queue: how many runs generate at once (FIFO; the rest queue).
     max_concurrent_runs: int | None = Field(default=None, ge=1, le=64)
+    # Email the run creator on completion (in addition to the in-app notification).
+    email_notifications: bool | None = None
     connectors_search_enabled: bool | None = None
     connectors_news_enabled: bool | None = None
     rag_mode: Literal["off", "keyword", "embedding"] | None = None

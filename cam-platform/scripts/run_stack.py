@@ -9,7 +9,6 @@ object store, real APIM) is described in docker-compose.yml and docs/.
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -18,7 +17,18 @@ from pathlib import Path
 import httpx
 
 ROOT = Path(__file__).resolve().parent.parent
-PYTHON = str(ROOT / ".venv" / "bin" / "python")
+
+
+def _venv_python() -> str:
+    """The project venv's interpreter, cross-platform (Windows: .venv\\Scripts,
+    POSIX: .venv/bin). Falls back to the current interpreter when there is no
+    venv (e.g. already running inside it)."""
+    candidate = (ROOT / ".venv" / "Scripts" / "python.exe" if os.name == "nt"
+                 else ROOT / ".venv" / "bin" / "python")
+    return str(candidate) if candidate.exists() else sys.executable
+
+
+PYTHON = _venv_python()
 
 SERVICES = [
     ("gateway", "cam.gateway.main:app", 8080),
@@ -52,7 +62,11 @@ class Stack:
         if wait:
             self.wait_healthy()
 
-    def wait_healthy(self, timeout: float = 45.0) -> None:
+    def wait_healthy(self, timeout: float | None = None) -> None:
+        # generous default (env-overridable) so a cold first start on a slow/AV-scanned
+        # Windows box isn't torn down prematurely by the inner gate
+        if timeout is None:
+            timeout = float(os.environ.get("CAM_STACK_HEALTH_TIMEOUT", "120"))
         deadline = time.monotonic() + timeout
         with httpx.Client(timeout=2.0) as client:
             for name, _, port in SERVICES:
@@ -92,8 +106,9 @@ if __name__ == "__main__":
     stack.start()
     print("CAM platform running — gateway http://localhost:8080 · Ctrl-C to stop")
     try:
-        signal.pause()
-    except (KeyboardInterrupt, AttributeError):
+        while True:  # cross-platform block (signal.pause is POSIX-only)
+            time.sleep(1)
+    except KeyboardInterrupt:
         pass
     finally:
         stack.stop()

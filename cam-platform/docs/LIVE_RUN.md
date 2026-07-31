@@ -172,6 +172,15 @@ Three runtime levers in *Masters → Settings* (no restart needed):
   person's burst can't monopolise the queue. Raise it for more throughput, lower it
   to protect a rate-limited endpoint. When a run finishes, its creator gets an
   in-app notification (the bell in the header) linking straight to the memo.
+- **Email notifications** (`email_notifications`, default on). In addition to the
+  in-app bell, the run's creator is emailed on completion with a deep link back to
+  the memo. Sending needs SMTP configured at deploy time; until then the mailer just
+  logs the message, so the toggle is safe to leave on. To send real email set:
+  `CAM_SMTP_HOST`, `CAM_SMTP_PORT` (587 STARTTLS / 465 with `CAM_SMTP_SSL=true`),
+  `CAM_SMTP_USERNAME`, and put the password in the env var named by
+  `CAM_SMTP_PASSWORD_ENV` (default `CAM_SMTP_PASSWORD`) — the value is read at send
+  time and never stored on Settings or logged (NFR-06). `CAM_SMTP_FROM` sets the
+  sender; `CAM_APP_BASE_URL` is the base for the deep link (the gateway origin).
 - **When the consistency agent runs** (`consistency_scope`). *Assurance agents →
   When the consistency agent runs*:
   - **After all sections** (default) — one memo-level pass sees every section

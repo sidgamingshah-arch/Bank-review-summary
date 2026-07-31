@@ -126,6 +126,27 @@ class Settings(BaseSettings):
     max_concurrent_runs: int = 4
     max_active_runs_per_user: int = 2
 
+    # Email (SMTP) notifications. If smtp_host is empty the mailer LOGS the message
+    # instead of sending (dev/no-op) so the feature works with zero configuration.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    # Only the NAME of the env var holding the SMTP password is stored (NFR-06); the
+    # value is read from os.environ at send time and never placed on Settings/logged.
+    smtp_password_env: str = "CAM_SMTP_PASSWORD"
+    smtp_from: str = "CAM Studio <cam-studio@bank.example>"
+    smtp_starttls: bool = True  # STARTTLS on a plain connection (port 587)
+    smtp_ssl: bool = False      # implicit TLS (SMTPS, port 465) — mutually exclusive
+    smtp_timeout_seconds: int = 15
+    # Base URL the SPA is served from (the single-origin gateway) — used to build
+    # deep links back to a run in notification emails.
+    app_base_url: str = "http://localhost:8080"
+    # Fallback for the runtime 'email_notifications' master toggle. The shipped
+    # default is ON via master DEFAULT_SETTINGS; this env-layer fallback is
+    # intentionally OFF so a master-config outage fails safe (no surprise mail when
+    # the toggle can't be read) rather than fail-open.
+    email_notifications: bool = False
+
     def resolved_db_url(self) -> str:
         if self.db_url:
             return self.db_url

@@ -17,9 +17,12 @@ import logging
 import os
 import time
 from collections import defaultdict, deque
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from cam.common.config import get_settings
 from cam.common.correlation import CORRELATION_HEADER, CorrelationMiddleware, get_correlation_id
@@ -138,3 +141,35 @@ async def proxy(request: Request, rest: str) -> Response:
 
     resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in HOP_HEADERS}
     return Response(content=upstream.content, status_code=upstream.status_code, headers=resp_headers)
+
+
+# ---- optional: serve the built SPA so the whole app is one origin (:8080) ----
+# When frontend/dist exists (produced by `npm run build`), the gateway also serves
+# the UI. The SPA calls the API with relative /api paths, so same-origin serving
+# needs no dev proxy — ideal for the single-click desktop launcher. If dist is
+# absent (pure API deployment) none of this registers and the gateway is API-only.
+FRONTEND_DIST = Path(os.environ.get(
+    "CAM_FRONTEND_DIST", str(Path(__file__).resolve().parents[3] / "frontend" / "dist")))
+
+if (FRONTEND_DIST / "index.html").is_file():
+    _assets = FRONTEND_DIST / "assets"
+    if _assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
+    _dist_root = FRONTEND_DIST.resolve()
+    _index = str(FRONTEND_DIST / "index.html")
+
+    @app.get("/{full_path:path}")
+    def spa(full_path: str) -> Response:
+        """Serve a real static file when it exists (favicon etc.); otherwise return
+        index.html so the client-side router can handle the route. /api and /healthz
+        are matched by their own routes above and never reach here."""
+        if full_path.startswith("api/"):
+            raise ApiError.not_found("route")
+        if full_path:
+            candidate = (FRONTEND_DIST / full_path).resolve()
+            # guard against path traversal: only serve files inside dist
+            if candidate.is_file() and _dist_root in candidate.parents:
+                return FileResponse(str(candidate))
+        return FileResponse(_index)
+
+    log.info("serving SPA from %s", FRONTEND_DIST)

@@ -205,6 +205,24 @@ def fetch_settings() -> dict:
         return {}
 
 
+def fetch_user_contact(username: str) -> dict:
+    """Look up a user's contact details (display name + email) service-to-service,
+    e.g. to email a run's creator. Fail-open to {} so a briefly-unreachable auth
+    service never breaks run finalisation. Monkeypatched in tests."""
+    import logging
+    try:
+        with gateway_client(settings, timeout=5.0) as client:
+            resp = client.get(f"/api/auth/users/by-username/{username}/contact",
+                              headers=gateway_headers(settings))
+            if resp.status_code >= 400:
+                return {}
+            return resp.json()
+    except Exception:
+        logging.getLogger("cam.orchestration").warning(
+            "contact lookup unreachable for user %s", username)
+        return {}
+
+
 def create_cam(payload: dict) -> dict:
     with gateway_client(settings) as client:
         resp = client.post("/api/cams", json=payload, headers=gateway_headers(settings))
