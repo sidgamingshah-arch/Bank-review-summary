@@ -67,6 +67,7 @@ Dev stand-in for bank IdP SSO (prod: OIDC/SAML — swap this service only).
 - `POST /api/auth/token` `{username, password}` → `200 {access_token, token_type:"bearer", expires_in, user: User}`
 - `GET /api/auth/me` → `User`
 - `GET /api/auth/users` (it_admin) → `[User]`; `POST /api/auth/users` (it_admin) `{username, display_name, email, roles, password}` → `User`; `PATCH /api/auth/users/{id}` `{roles?, active?}` → `User`
+- `GET /api/auth/users/by-username/{username}/contact` (**service identities only**) → `{username, display_name, email, active}` — used by orchestration to resolve where to email a run's creator; never exposed to end users.
 - `GET /api/auth/preferences` → `PreferenceProfile` (own; falls back to org default)
 - `PUT /api/auth/preferences` `PreferenceProfileInput` → `PreferenceProfile`
 - `GET|PUT /api/auth/preferences/org-default` (PUT: `org_defaults:set`) → `PreferenceProfile`
@@ -123,7 +124,7 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
   `scripts/masters_bundle.py template|bulk-upload masters.xlsx`.
 - `GET /api/masters/settings` → `{tagging_confidence_threshold, tagging_mode,
   agents_materiality_enabled, agents_consistency_enabled, agent_revision_limit,
-  consistency_scope, worker_concurrency, max_concurrent_runs,
+  consistency_scope, worker_concurrency, max_concurrent_runs, email_notifications,
   connectors_search_enabled, connectors_news_enabled, rag_mode, rag_top_k,
   _llm:{provider, model, base_url, max_tokens, api_key_env, api_key_configured,
   embed_provider, embed_model, embed_base_url, embed_dim, embed_api_key_env,
@@ -139,7 +140,10 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
   (1–64) is the number of sections drafted in parallel; it applies at runtime (clamped
   to `CAM_WORKER_POOL_SIZE`, the pool spawned at startup) without a restart.
   `max_concurrent_runs` (1–64, default 4) is how many runs generate at once — bursts
-  beyond it queue and start automatically as running runs finish.
+  beyond it queue and start automatically as running runs finish. `email_notifications`
+  (bool, default true) additionally emails the run's creator on completion; sending
+  requires SMTP configured at deploy time (`CAM_SMTP_*`) — with no SMTP host the mailer
+  logs the message rather than sending, so the toggle is safe to leave on.
 - `GET /api/masters/llm-config` (`masters:read`) → the admin-set LLM overrides (only keys that
   were set; absent → the gateway's env default). `PUT /api/masters/llm-config` (business_admin)
   `{llm_provider?: mock|anthropic|openai, genai_model?, genai_base_url?, genai_temperature?,
@@ -334,7 +338,11 @@ starts `queued`); the worker promotes queued runs to `running` FIFO while fewer 
 fairness cap `CAM_MAX_ACTIVE_RUNS_PER_USER` (default 2) so one user's burst can't take every
 slot. A run's sections become claimable only once its run is admitted. On completion a slot
 frees and the next queued run starts automatically. When a run reaches a terminal state its
-creator gets an in-app notification.
+creator gets an in-app notification, and (when `email_notifications` is on) an email with a
+deep link back to the run — sent best-effort in the worker, gated by the master toggle and the
+recipient's stored address; a mail failure never breaks finalisation. SMTP is configured via
+`CAM_SMTP_*`; the password is read from the env var named by `CAM_SMTP_PASSWORD_ENV` and is
+never stored on Settings or logged (NFR-06). With no SMTP host the mailer logs instead of sends.
 
 Section interlinking (FR-D08): a template section may declare `depends_on: [codes]`
 (or `depends_on_all: true`, the executive-summary case). A section job is not claimed until

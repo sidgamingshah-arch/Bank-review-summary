@@ -122,6 +122,18 @@ def list_users(principal: Principal = Depends(require("users:admin"))):
         return [u.to_dict() for u in db.scalars(select(User).order_by(User.username)).all()]
 
 
+@app.get("/api/auth/users/by-username/{username}/contact")
+def user_contact(username: str, principal: Principal = Depends(require_service)):
+    """Service-to-service contact lookup (e.g. orchestration resolving where to
+    email a run's creator). Never exposed to end users."""
+    with SessionLocal() as db:
+        user = db.scalar(select(User).where(User.username == username))
+        if not user:
+            raise ApiError.not_found("user")
+        return {"username": user.username, "display_name": user.display_name,
+                "email": user.email, "active": user.active}
+
+
 @app.post("/api/auth/users", status_code=201)
 def create_user(body: UserCreate, principal: Principal = Depends(require("users:admin"))):
     with SessionLocal() as db:

@@ -15,7 +15,7 @@ from datetime import timedelta
 
 from sqlalchemy import select
 
-from cam.common import audit
+from cam.common import audit, mail
 from cam.common.correlation import set_correlation_id
 from cam.common.db import utcnow
 
@@ -94,6 +94,27 @@ def _max_concurrent_runs() -> int:
     val = max(1, val)
     _runs_cache["value"] = val
     _runs_cache["at"] = now
+    return val
+
+
+_email_cache: dict = {"value": None, "at": 0.0}
+
+
+def _email_enabled() -> bool:
+    """Whether completion emails are on (master setting 'email_notifications'),
+    cached briefly. Fail-open to the environment default when master-config is
+    briefly unreachable."""
+    default = bool(getattr(settings, "email_notifications", False))
+    now = time.monotonic()
+    if _email_cache["value"] is not None and now - _email_cache["at"] < _ACTIVE_TTL_SECONDS:
+        return _email_cache["value"]
+    val = default
+    try:
+        val = bool(resolver.fetch_settings().get("email_notifications", default))
+    except Exception:  # fail-open
+        val = default
+    _email_cache["value"] = val
+    _email_cache["at"] = now
     return val
 
 
@@ -829,6 +850,49 @@ def _notify_run(run: Run, status: str, cam_id: str | None) -> None:
             db.commit()
     except Exception:  # pragma: no cover - notifications are best-effort
         log.exception("failed to write completion notification for run %s", run.id)
+    _email_run_complete(run, kind, title, body)
+
+
+def _email_run_complete(run: Run, kind: str, title: str, body: str) -> None:
+    """Also email the run's creator (best-effort, gated by the 'email_notifications'
+    master toggle). Sent inline but bounded by the SMTP timeout; any failure is
+    logged and never breaks finalisation. When no SMTP host is configured the
+    mailer logs the message instead of sending (dev/no-op)."""
+    if not _email_enabled():
+        return
+    try:
+        contact = resolver.fetch_user_contact(run.created_by) or {}
+        to = (contact.get("email") or "").strip()
+        if not to:
+            return
+        name = contact.get("display_name") or run.created_by
+        link = f"{settings.app_base_url.rstrip('/')}/runs/{run.id}"
+        text = (f"Hello {name},\n\n{body}\n\nOpen the memo: {link}\n\n"
+                "— CAM Studio (automated notification)")
+        mail.send_email(settings, to, f"CAM Studio · {title}", text,
+                        _completion_email_html(name, kind, title, body, link))
+    except Exception:  # pragma: no cover - email is best-effort
+        log.exception("completion email failed for run %s", run.id)
+
+
+def _completion_email_html(name: str, kind: str, title: str, body: str, link: str) -> str:
+    """A small, self-contained (inline-styled) HTML email body."""
+    from html import escape
+    accent = {"run_failed": "#c0392b", "run_partial": "#b7791f"}.get(kind, "#2f855a")
+    return (
+        '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:520px;margin:auto;'
+        'color:#1b1740">'
+        f'<div style="border-left:4px solid {accent};padding:4px 14px;margin-bottom:16px">'
+        f'<h2 style="margin:0 0 4px;font-size:18px">{escape(title)}</h2></div>'
+        f'<p style="font-size:14px;line-height:1.55">Hello {escape(name)},</p>'
+        f'<p style="font-size:14px;line-height:1.55">{escape(body)}</p>'
+        f'<p style="margin:22px 0"><a href="{escape(link)}" '
+        'style="background:#5a48e0;color:#fff;text-decoration:none;padding:10px 18px;'
+        'border-radius:8px;font-size:14px;font-weight:600">Open the memo</a></p>'
+        '<p style="font-size:12px;color:#7a7597">CAM Studio · automated notification. '
+        'If the button does not work, paste this link into your browser:<br>'
+        f'<span style="color:#5a48e0">{escape(link)}</span></p></div>'
+    )
 
 
 def _maybe_finalize(run_id: str) -> None:

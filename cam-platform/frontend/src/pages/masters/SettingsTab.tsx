@@ -12,6 +12,8 @@ interface Editable {
   agent_revision_limit: string;
   consistency_scope: 'per_section' | 'post_generation';
   worker_concurrency: string;
+  max_concurrent_runs: string;
+  email_notifications: boolean;
   connectors_news_enabled: boolean;
   connectors_search_enabled: boolean;
   rag_mode: 'off' | 'keyword' | 'embedding';
@@ -46,6 +48,8 @@ function toForm(s: MasterSettings): Editable {
     agent_revision_limit: String(s.agent_revision_limit ?? 1),
     consistency_scope: (s.consistency_scope as Editable['consistency_scope']) ?? 'post_generation',
     worker_concurrency: String(s.worker_concurrency ?? 2),
+    max_concurrent_runs: String(s.max_concurrent_runs ?? 4),
+    email_notifications: s.email_notifications ?? true,
     connectors_news_enabled: s.connectors_news_enabled ?? false,
     connectors_search_enabled: s.connectors_search_enabled ?? false,
     rag_mode: (s.rag_mode as Editable['rag_mode']) ?? (s.rag_enabled ? 'embedding' : 'off'),
@@ -143,6 +147,11 @@ export function SettingsTab() {
       toast.error('Generation concurrency must be an integer between 1 and 64');
       return;
     }
+    const maxRuns = Number(form.max_concurrent_runs);
+    if (!Number.isInteger(maxRuns) || maxRuns < 1 || maxRuns > 64) {
+      toast.error('Concurrent runs must be an integer between 1 and 64');
+      return;
+    }
     setSaving(true);
     try {
       const updated = await api.put<MasterSettings>('/api/masters/settings', {
@@ -153,6 +162,8 @@ export function SettingsTab() {
         agent_revision_limit: revisionLimit,
         consistency_scope: form.consistency_scope,
         worker_concurrency: concurrency,
+        max_concurrent_runs: maxRuns,
+        email_notifications: form.email_notifications,
         connectors_news_enabled: form.connectors_news_enabled,
         connectors_search_enabled: form.connectors_search_enabled,
         rag_mode: form.rag_mode,
@@ -347,6 +358,40 @@ export function SettingsTab() {
             concurrent load to the LLM endpoint (mind its rate limits). Applied within a few seconds,
             no restart; capped by the worker pool size set at deployment (<code>CAM_WORKER_POOL_SIZE</code>).
           </div>
+        </div>
+        <div className="field">
+          <label>Concurrent runs (memos generated at once)</label>
+          <input
+            className="input slim"
+            type="number"
+            min={1}
+            max={64}
+            step={1}
+            value={form.max_concurrent_runs}
+            onChange={(e) => set('max_concurrent_runs', e.target.value)}
+          />
+          <div className="hint">
+            When several runs are submitted together they all queue; at most this many generate
+            concurrently (FIFO) and the rest start automatically as slots free, with a per-user
+            fairness cap. Lower this to protect a rate-limited endpoint.
+          </div>
+        </div>
+
+        <h3 className="settings-group">Notifications</h3>
+        <div className="check-row">
+          <label className="check-pill">
+            <input
+              type="checkbox"
+              checked={form.email_notifications}
+              onChange={(e) => set('email_notifications', e.target.checked)}
+            />
+            Email the analyst when their memo is ready
+          </label>
+        </div>
+        <div className="hint">
+          In addition to the in-app bell, email the run's creator on completion. Requires SMTP
+          configured at deployment (<code>CAM_SMTP_*</code>); with no SMTP host the message is
+          logged rather than sent.
         </div>
 
         <h3 className="settings-group">External connectors</h3>

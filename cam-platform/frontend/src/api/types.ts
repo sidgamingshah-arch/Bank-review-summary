@@ -222,6 +222,8 @@ export interface MasterSettings {
   agent_revision_limit?: number;
   consistency_scope?: 'per_section' | 'post_generation';
   worker_concurrency?: number;
+  max_concurrent_runs?: number;
+  email_notifications?: boolean;
   connectors_search_enabled?: boolean;
   connectors_news_enabled?: boolean;
   rag_mode?: 'off' | 'keyword' | 'embedding';
