@@ -94,3 +94,29 @@ class SectionJob(Base):
             "agent_trace": self.agent_trace or [],
             "updated_at": iso(self.updated_at),
         }
+
+
+class Notification(Base):
+    """A per-user notification (e.g. 'your run finished'). Delivered in-app: the
+    run's creator polls their unread notifications and the header shows a count."""
+
+    __tablename__ = "notifications"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    username: Mapped[str] = mapped_column(String(64), index=True)  # recipient (run creator)
+    kind: Mapped[str] = mapped_column(String(32), default="run_complete")
+    # run_complete | run_partial | run_failed
+    title: Mapped[str] = mapped_column(String(200), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    case_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    cam_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id, "kind": self.kind, "title": self.title, "body": self.body,
+            "run_id": self.run_id, "case_id": self.case_id, "cam_id": self.cam_id,
+            "read": self.read, "created_at": iso(self.created_at),
+        }

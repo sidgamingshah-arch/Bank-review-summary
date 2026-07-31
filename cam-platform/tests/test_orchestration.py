@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 import cam.services.orchestration.main as orch
 from cam.services.orchestration import resolver, worker
+from cam.services.orchestration.models import Run
 from cam.services.orchestration.worker import build_gap_trailer, render_kpi_block
 from tests.conftest import make_user_headers
 
@@ -129,6 +130,9 @@ def wired(monkeypatch):
     # still runs (empty results -> full-text fallback via fetch_document_text).
     monkeypatch.setattr(resolver, "retrieve_chunks",
                         lambda ids, q, k, mode="embedding": {"results": [], "query_embedded": True})
+    # live operating settings (concurrency etc.) — empty -> worker uses env defaults
+    monkeypatch.setattr(resolver, "fetch_settings", lambda: {})
+    worker._runs_cache["value"] = None  # reset the concurrency-cap cache per test
     monkeypatch.setattr(resolver, "fetch_user_preferences", lambda h: PREFS)
     monkeypatch.setattr(resolver, "genai_generate", fake_genai)
     monkeypatch.setattr(resolver, "create_cam", fake_create_cam)
@@ -263,21 +267,44 @@ def test_regenerate_pushes_new_version(wired, analyst_headers):
         assert cam_id == "cam-1" and section_id == "os-financial_analysis" and content
 
 
-def test_rate_limit_and_scoping(wired, analyst_headers, reviewer_headers):
+def test_run_queue_and_scoping(wired, analyst_headers, reviewer_headers):
     with TestClient(orch.app) as c:
-        first = _create_run(c, analyst_headers).json()
-        _create_run(c, analyst_headers)
-        r = _create_run(c, analyst_headers)  # third active run for same user
-        assert r.status_code == 429 and r.json()["error"]["code"] == "rate_limited"
+        # a burst of runs is ACCEPTED and queued (no 429) — FR-D07 queue, not reject
+        r1 = _create_run(c, analyst_headers)
+        r2 = _create_run(c, analyst_headers)
+        r3 = _create_run(c, analyst_headers)
+        assert [r1.status_code, r2.status_code, r3.status_code] == [202, 202, 202]
+        my_ids = {r1.json()["id"], r2.json()["id"], r3.json()["id"]}
 
         # another analyst cannot read this run; a reviewer can
-        r = c.get(f"/api/runs/{first['id']}", headers=make_user_headers("analyst2", ["analyst"]))
+        first_id = r1.json()["id"]
+        r = c.get(f"/api/runs/{first_id}", headers=make_user_headers("analyst2", ["analyst"]))
         assert r.status_code == 403
-        assert c.get(f"/api/runs/{first['id']}", headers=reviewer_headers).status_code == 200
+        assert c.get(f"/api/runs/{first_id}", headers=reviewer_headers).status_code == 200
         # auditor cannot launch generation (BRD §4)
-        r = _create_run(c, make_user_headers("auditor1", ["auditor"]))
-        assert r.status_code == 403
+        assert _create_run(c, make_user_headers("auditor1", ["auditor"])).status_code == 403
+
+        # the queue drains automatically — every accepted run reaches a terminal state
         worker.drain()
+        runs = {r["id"]: r for r in c.get("/api/runs", headers=analyst_headers).json()}
+        assert all(runs[i]["status"] == "complete" for i in my_ids)
+
+
+def test_run_admission_caps_concurrency(wired, analyst_headers, monkeypatch):
+    # global cap generous; the per-user fairness cap (default 2) is the binding
+    # limit, so only 2 of one analyst's 3 queued runs are admitted at once.
+    monkeypatch.setattr(worker.resolver, "fetch_settings", lambda: {"max_concurrent_runs": 8})
+    worker._runs_cache["value"] = None
+    with TestClient(orch.app) as c:
+        ids = [_create_run(c, analyst_headers).json()["id"] for _ in range(3)]
+        with worker.SessionLocal() as db:
+            worker._admit_pending_runs(db)
+            db.commit()
+        with worker.SessionLocal() as db:
+            statuses = [db.get(Run, i).status for i in ids]
+        assert statuses.count("running") == 2  # per-user fairness cap
+        assert statuses.count("queued") == 1
+        worker.drain()  # the rest is admitted + drained as slots free
 
 
 def test_usage_summary_roles(wired, analyst_headers, auditor_headers):

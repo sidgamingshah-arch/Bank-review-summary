@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useTheme } from '../theme';
+import { NotificationBell } from './NotificationBell';
 
 interface NavItem {
   to: string;
@@ -49,6 +50,7 @@ export function Shell() {
                   {r.replace(/_/g, ' ')}
                 </span>
               ))}
+              <NotificationBell />
               <button
                 type="button"
                 className="theme-toggle"

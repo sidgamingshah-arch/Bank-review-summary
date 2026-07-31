@@ -118,6 +118,12 @@ class Settings(BaseSettings):
     # the active count). Back-compat: CAM_WORKER_CONCURRENCY still seeds both.
     worker_concurrency: int = 2
     worker_pool_size: int = 8
+    # Run-level admission queue: bursts of run requests are all ACCEPTED (queued),
+    # and at most max_concurrent_runs generate at once (FIFO, admin-tunable master
+    # setting); the rest wait and start automatically as slots free.
+    # max_active_runs_per_user is a per-user fairness cap on RUNNING runs so one
+    # user's burst cannot occupy every slot (submission is never rejected).
+    max_concurrent_runs: int = 4
     max_active_runs_per_user: int = 2
 
     def resolved_db_url(self) -> str:
