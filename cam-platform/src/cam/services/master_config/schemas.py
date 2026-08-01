@@ -126,6 +126,12 @@ AGENT_RULE_KEYS = {
 GLOBAL_PROMPT_KEYS = {GLOBAL_PROMPT_KEY, *AGENT_RULE_KEYS.values()}
 
 
+def is_section_prompt(key: str) -> bool:
+    """A section prompt (keyed by section_code) — as opposed to the global standing
+    rules or the agent-role rules. Only section prompts are stored in Opik."""
+    return key not in GLOBAL_PROMPT_KEYS
+
+
 def _resolved_deps(section, code_set: set[str]) -> set[str]:
     """A section's effective dependency set: depends_on_all expands to every
     other section; otherwise the explicit (valid) depends_on codes."""

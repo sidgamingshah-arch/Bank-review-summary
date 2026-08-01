@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, errorMessage } from '../../api/client';
-import type { LlmConfigInput, LlmInfo, MasterSettings } from '../../api/types';
+import type { LlmConfigInput, LlmInfo, MasterSettings, OpikStatus } from '../../api/types';
 import { PageLoading } from '../../components/Spinner';
 import { useToast } from '../../components/Toast';
 
@@ -87,6 +87,7 @@ export function SettingsTab() {
   const [azureKeyConfigured, setAzureKeyConfigured] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingLlm, setSavingLlm] = useState(false);
+  const [opik, setOpik] = useState<OpikStatus | null>(null);
 
   const ingest = (s: MasterSettings) => {
     setForm(toForm(s));
@@ -106,6 +107,14 @@ export function SettingsTab() {
         if (!cancelled) ingest(s);
       })
       .catch((err) => toast.error(errorMessage(err)));
+    api
+      .get<OpikStatus>('/api/masters/opik/status')
+      .then((s) => {
+        if (!cancelled) setOpik(s);
+      })
+      .catch(() => {
+        /* prompt-store status is informational — ignore transient errors */
+      });
     return () => {
       cancelled = true;
     };
@@ -396,6 +405,28 @@ export function SettingsTab() {
           In addition to the in-app bell, email the run's creator on completion. Requires SMTP
           configured at deployment (<code>CAM_SMTP_*</code>); with no SMTP host the message is
           logged rather than sent.
+        </div>
+
+        <h3 className="settings-group">Prompt store</h3>
+        <div className="hint">
+          Section prompts are stored in{' '}
+          {opik?.backend === 'opik' ? (
+            <>
+              <strong>Opik</strong> (system-of-record)
+              {opik?.reachable === false ? ' — configured but unreachable; using the local snapshot' : ''}
+              {opik?.project ? (
+                <>
+                  {' '}· project <code>{opik.project}</code>
+                </>
+              ) : null}
+            </>
+          ) : (
+            <>
+              a <strong>local snapshot</strong> stand-in — set <code>CAM_OPIK_*</code> to make Opik
+              the system-of-record
+            </>
+          )}
+          . master-config keeps maker-checker, versioning and audit either way.
         </div>
 
         <h3 className="settings-group">External connectors</h3>

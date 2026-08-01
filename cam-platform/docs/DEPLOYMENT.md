@@ -120,6 +120,9 @@ Selected entirely by environment variables — no code change:
 - **Retrieval**: `CAM_RETRIEVAL_BACKEND` = `local` | `azure_search` (Azure AI Search).
 - **Storage**: `CAM_BLOB_BACKEND` = `local` | `azure` (Azure Blob).
 - **Identity**: swap the auth-adapter for the bank IdP (OIDC/SAML) — one service.
+- **Prompt store**: `CAM_OPIK_ENABLED=true` + `CAM_OPIK_*` makes Opik the
+  system-of-record for section prompts (self-hosted or Comet cloud). Disabled = a
+  local snapshot stand-in. Install the extra: `pip install -e .[opik]`.
 - **Edge**: services behind the real APIM; the built-in gateway policies mirror it.
 
 See `docs/architecture.md` (§14) and `docs/LIVE_RUN.md` for provider/RAG specifics.

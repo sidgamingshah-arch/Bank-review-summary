@@ -22,6 +22,7 @@ from cam.common.placeholders import resolve_placeholders
 from cam.common.security import Principal, make_auth_dependencies
 
 from . import engine as eng
+from . import prompt_store
 from .csv_io import parse_kpi_csv, render_kpi_csv
 from .models import DEFAULT_SETTINGS, MTYPES, MasterItem, MasterVersion, Setting
 from .schemas import AGENT_RULE_KEYS, GLOBAL_PROMPT_KEY, validate_payload
@@ -111,6 +112,13 @@ def get_settings_map(principal: Principal = Depends(require("masters:read"))):
     with SessionLocal() as db:
         stored = {s.key: s.value.get("value") for s in db.scalars(select(Setting)).all()}
     return {**DEFAULT_SETTINGS, **stored, "_llm": _llm_info()}
+
+
+@app.get("/api/masters/opik/status")
+def opik_status(principal: Principal = Depends(require("masters:read"))):
+    """Where section-prompt content is stored: the Opik prompt store when enabled
+    and reachable, otherwise the local snapshot stand-in."""
+    return prompt_store.status()
 
 
 class SettingsPatch(BaseModel):
@@ -298,9 +306,18 @@ def resolve_template(key: str, principal: Principal = Depends(require("masters:r
             if not prompt_v:
                 raise ApiError(409, "not_published",
                                f"section '{s['section_code']}' has no published prompt")
+            # Opik is the system-of-record for section-prompt content: read the
+            # authoritative text back from Opik by the reference stamped on the
+            # version's provenance; fall back to the master-config snapshot when
+            # Opik is off/unreachable.
+            payload = dict(prompt_v.payload)
+            opik_ref = (prompt_v.provenance or {}).get("opik")
+            live = prompt_store.fetch(s["section_code"], opik_ref)
+            if live is not None:
+                payload["prompt_text"] = live
             sections.append({**s, "prompt": {"key": s["section_code"],
                                              "version": prompt_v.version_no,
-                                             "payload": prompt_v.payload}})
+                                             "payload": payload, "provenance": opik_ref}})
 
         global_item = eng.get_item(db, "prompt", GLOBAL_PROMPT_KEY)
         global_v = eng.published_version(db, global_item) if global_item else None
