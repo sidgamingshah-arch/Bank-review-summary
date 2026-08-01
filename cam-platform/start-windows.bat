@@ -27,7 +27,7 @@ if not defined PYEXE (
   exit /b 1
 )
 
-%PYEXE% scripts\windows_start.py
+%PYEXE% scripts\launch.py
 set "RC=%ERRORLEVEL%"
 
 echo(

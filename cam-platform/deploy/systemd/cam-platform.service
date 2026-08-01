@@ -1,0 +1,43 @@
+# CAM Studio — single-host Linux service (gateway + 8 services under one supervisor).
+#
+# Install:
+#   sudo useradd --system --home /opt/cam --shell /usr/sbin/nologin cam   # once
+#   sudo cp -r <repo>/cam-platform /opt/cam/cam-platform
+#   sudo -u cam python3 -m venv /opt/cam/cam-platform/.venv
+#   sudo -u cam /opt/cam/cam-platform/.venv/bin/pip install -e /opt/cam/cam-platform
+#   sudo -u cam bash -c 'cd /opt/cam/cam-platform/frontend && npm ci && npm run build'  # for the UI
+#   sudo mkdir -p /etc/cam && sudo cp deploy/systemd/cam-platform.env.example /etc/cam/cam-platform.env  # then edit
+#   sudo cp deploy/systemd/cam-platform.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cam-platform
+#
+# For anything beyond a single host, prefer the container topology
+# (docker-compose.yml) — see docs/DEPLOYMENT.md.
+
+[Unit]
+Description=CAM Studio platform (gateway + services)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cam
+Group=cam
+WorkingDirectory=/opt/cam/cam-platform
+# secrets + operating config (DB URL, JWT secret, LLM/SMTP/Azure, …)
+EnvironmentFile=/etc/cam/cam-platform.env
+# run_stack spawns the 9 uvicorn processes; it handles SIGTERM to stop them cleanly
+ExecStart=/opt/cam/cam-platform/.venv/bin/python scripts/run_stack.py
+Restart=on-failure
+RestartSec=5
+# SIGTERM the supervisor (graceful child shutdown), then SIGKILL the cgroup if it lingers
+KillMode=mixed
+TimeoutStopSec=30
+
+# hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

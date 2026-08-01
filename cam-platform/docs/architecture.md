@@ -446,11 +446,14 @@ gating finalisation:
 
 ## 14. Deployment
 
-- **Local (one click).** Windows: double-click `start-windows.bat` → venv + UI
-  build + seed + all services + browser at `http://localhost:8080` (the gateway
-  serves the built SPA — single origin). macOS/Linux:
-  `python scripts/windows_start.py`. Under the hood: `scripts/run_stack.py`
-  (9 uvicorn processes, SQLite, local blobs, mock LLM — zero external deps).
+- **Local (one click).** Windows: double-click `start-windows.bat`; Linux/macOS:
+  `./start-linux.sh` → venv + UI build + seed + all services + browser at
+  `http://localhost:8080` (the gateway serves the built SPA — single origin). Under
+  the hood: `scripts/launch.py` → `scripts/run_stack.py` (9 uvicorn processes,
+  SQLite, local blobs, mock LLM — zero external deps).
+- **Single-host service.** Linux: a `systemd` unit (`deploy/systemd/`); Windows: a
+  boot Scheduled Task (`deploy/windows/`). Both supervise `run_stack.py`. See
+  [DEPLOYMENT.md](DEPLOYMENT.md).
 - **Containerised.** `docker compose up --build` — PostgreSQL 16 + one image per
   service (`SERVICE_MODULE`), gateway on :8080. Orchestration scales horizontally
   (queue claims safe under `FOR UPDATE SKIP LOCKED`).
