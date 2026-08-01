@@ -18,7 +18,9 @@ from sqlalchemy.orm import Session
 from cam.common.db import new_id, utcnow
 from cam.common.errors import ApiError
 
+from . import prompt_store
 from .models import MasterItem, MasterVersion
+from .schemas import is_section_prompt
 
 
 def get_item(db: Session, mtype: str, key: str) -> MasterItem | None:
@@ -108,6 +110,15 @@ def approve(db: Session, item: MasterItem, version: MasterVersion, by: str) -> M
     version.status = "published"
     version.approved_by = by
     version.approved_at = utcnow()
+    # Opik is the system-of-record for section-prompt content: on publish, write
+    # the approved text to Opik and stamp the returned reference on the version's
+    # PROVENANCE (system metadata, kept out of the validated business payload so it
+    # never affects schema validation or export/import). Fail-open (local ref) so
+    # publishing never depends on Opik being reachable.
+    if item.mtype == "prompt" and is_section_prompt(item.key):
+        ref = prompt_store.publish(item.key, (version.payload or {}).get("prompt_text", ""),
+                                   version.version_no)
+        version.provenance = {**(version.provenance or {}), "opik": ref}
     return version
 
 

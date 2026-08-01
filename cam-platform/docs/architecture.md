@@ -125,6 +125,20 @@ run (`not_published` otherwise). Masters can be exported/imported as a JSON
 bundle and bulk-loaded from Excel. Operating levers (below) live as runtime
 **settings** merged over `DEFAULT_SETTINGS`.
 
+**Section prompts live in Opik.** For **section prompts** specifically, the Opik
+prompt library is the **system-of-record** for the content. On publish the approved
+prompt text is written to Opik (a versioned entry keyed by the prompt name) and its
+commit reference is stamped on the master version's *provenance* — kept out of the
+validated business payload so export/import and schema validation are unaffected.
+At generation time the section prompt is read back from Opik by that reference.
+master-config still owns governance (maker-checker, version numbers, status, audit)
+and retains a content **snapshot**, so the platform stays reproducible and runs
+**offline**: when Opik is disabled or unreachable a local stand-in ref is used and
+the snapshot is read — every call is **fail-open**, so Opik can never block a
+publish or a run. The global standing rules and the agent rules remain in
+master-config only. Config: `CAM_OPIK_*` (see §13); status at
+`GET /api/masters/opik/status`.
+
 ---
 
 ## 4. Document lifecycle (FR-C\*)

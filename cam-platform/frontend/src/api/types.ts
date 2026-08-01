@@ -233,6 +233,16 @@ export interface MasterSettings {
   [key: string]: unknown;
 }
 
+export interface OpikStatus {
+  enabled: boolean;
+  backend: 'opik' | 'local' | string;
+  url?: string | null;
+  project?: string | null;
+  sdk_installed?: boolean;
+  reachable?: boolean;
+  error?: string;
+}
+
 export interface KpiBulkReport {
   created: string[];
   updated: string[];

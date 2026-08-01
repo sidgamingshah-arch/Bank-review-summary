@@ -147,6 +147,19 @@ class Settings(BaseSettings):
     # the toggle can't be read) rather than fail-open.
     email_notifications: bool = False
 
+    # Opik prompt store — system-of-record for SECTION-PROMPT content (the prompt
+    # masters). When disabled, a local stand-in keeps the platform fully offline and
+    # master-config's snapshot is used; when enabled, published section prompts are
+    # written to (and read back from) an Opik deployment. Fail-open either way.
+    opik_enabled: bool = False
+    opik_url: str = ""          # self-hosted host base, e.g. http://opik:5173/api (blank = SDK default / Comet cloud)
+    opik_workspace: str = ""    # Comet workspace (cloud); blank for a self-hosted "default"
+    opik_project: str = "cam-prompts"
+    # Only the NAME of the env var holding the Opik API key is stored (NFR-06); the
+    # value is read from os.environ at call time and never placed on Settings/logged.
+    opik_api_key_env: str = "OPIK_API_KEY"
+    opik_prompt_prefix: str = ""  # optional name prefix to namespace prompts within Opik
+
     def resolved_db_url(self) -> str:
         if self.db_url:
             return self.db_url

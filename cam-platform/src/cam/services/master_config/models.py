@@ -48,6 +48,10 @@ class MasterVersion(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     rejected_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     effective_from: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # system-managed provenance, kept OUT of the validated business payload so it
+    # never affects schema validation or export/import round-trips (e.g. the Opik
+    # prompt-store reference {opik: {backend, name, commit}} stamped on publish).
+    provenance: Mapped[dict] = mapped_column(JSON, default=dict)
 
     def meta(self) -> dict:
         return {
@@ -56,6 +60,7 @@ class MasterVersion(Base):
             "submitted_by": self.submitted_by, "approved_by": self.approved_by,
             "approved_at": iso(self.approved_at), "rejected_reason": self.rejected_reason,
             "effective_from": iso(self.effective_from), "change_note": self.change_note,
+            "provenance": self.provenance or {},
         }
 
     def to_dict(self) -> dict:

@@ -115,6 +115,7 @@ Approve enforces checker ≠ maker (`maker_checker_violation` otherwise).
   errors:[{entry?|sheet+row, message}], note}` — parses the workbook, imports every row as a
   DRAFT in dependency order (same idempotency/ordering as import-bundle). Audit `master.bulk_uploaded`.
 - `POST /api/masters/prompts/{key}/sandbox-test` `{sample_docs: [{doctype_code, text}], placeholders?: {}}` → `{content, model, usage}` (FR-A05; calls genai with the DRAFT latest version)
+- `GET /api/masters/opik/status` (`masters:read`) → `{enabled, backend: opik|local, url?, project?, sdk_installed?, reachable?}` — where **section-prompt** content is stored. When Opik is enabled, publishing a section prompt writes its text to the Opik prompt library and stamps the returned commit on the version's `provenance.opik`; resolution reads the text back from Opik (fail-open to the master-config snapshot). Standing/agent rules are unaffected.
 - `GET /api/masters/export-bundle` (business_admin/auditor) → `{bundle_version, masters:
   [{mtype, key, version, payload}], settings}` — every published master, for environment
   portability. `POST /api/masters/import-bundle` `{masters}` (business_admin) → imports as
