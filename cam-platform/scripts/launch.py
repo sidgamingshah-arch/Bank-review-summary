@@ -1,5 +1,8 @@
-"""One-click local launcher for the CAM platform (Windows-friendly, but works on
-macOS/Linux too). Double-click ``start-windows.bat`` — it calls this script.
+"""One-click local launcher for the CAM platform — cross-platform.
+
+    Windows: double-click ``start-windows.bat``   (calls this script)
+    Linux/macOS: run ``./start-linux.sh``          (calls this script)
+    Direct:  python scripts/launch.py
 
 What it does, idempotently (fast on subsequent runs thanks to marker files):
   1. create a virtualenv in ``.venv`` and ``pip install -e .`` (first run only)

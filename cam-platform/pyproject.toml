@@ -30,6 +30,8 @@ postgres = ["psycopg[binary]>=3.1"]
 # is only needed for the account-URL / managed-identity auth path.
 azure = ["azure-storage-blob>=12.19", "azure-identity>=1.16"]
 dev = ["pytest>=8", "anthropic>=0.34"]
+# docs tooling: regenerate the architecture deck (scripts/make_architecture_pptx.py)
+docs = ["python-pptx>=1.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cam"]

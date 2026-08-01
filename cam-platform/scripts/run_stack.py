@@ -102,11 +102,20 @@ class Stack:
 
 
 if __name__ == "__main__":
+    import signal
+
     stack = Stack()
+    _stopping = {"flag": False}
+
+    def _graceful(signum, _frame):
+        # SIGTERM (systemd/service stop) and SIGINT both tear the stack down cleanly
+        _stopping["flag"] = True
+
+    signal.signal(signal.SIGTERM, _graceful)
     stack.start()
     print("CAM platform running — gateway http://localhost:8080 · Ctrl-C to stop")
     try:
-        while True:  # cross-platform block (signal.pause is POSIX-only)
+        while not _stopping["flag"]:  # cross-platform block (signal.pause is POSIX-only)
             time.sleep(1)
     except KeyboardInterrupt:
         pass
