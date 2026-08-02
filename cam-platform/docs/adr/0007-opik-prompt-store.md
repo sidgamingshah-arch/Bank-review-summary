@@ -28,9 +28,13 @@ the **governance and reproducibility** layer around it.
   Opik by `(name, commit)`; the resolved bundle (and the per-run snapshot) carries
   it, so reproducibility holds.
 - **Backends:** `opik` (a real deployment, via the optional `opik` SDK, lazily
-  imported) when `CAM_OPIK_ENABLED`; otherwise a **local stand-in** — `publish`
-  returns a deterministic content-hash ref and `fetch` returns `None`, so callers
-  use the master-config snapshot. Same pattern as mock-LLM / local-RAG / local-blob.
+  imported) engages **automatically once its PATH is configured** (`CAM_OPIK_URL`);
+  **until then the normal master-config database is the store** (a local stand-in —
+  `publish` returns a deterministic content-hash ref, `fetch` returns `None`,
+  callers use the snapshot). A stray API key alone does **not** engage Opik — that
+  guards against silently sending prompt text to Comet cloud; cloud-without-URL
+  needs an explicit `CAM_OPIK_ENABLED=true`, and `=false` is a kill switch. Same
+  configure-to-engage pattern as the LLM / RAG / blob backends.
 - **Fail-open, always:** any Opik error, a missing SDK, or an unreachable server
   never blocks a publish or a run — the platform degrades to the snapshot. The
   Opik API key is referenced by env-var **name** only (NFR-06).

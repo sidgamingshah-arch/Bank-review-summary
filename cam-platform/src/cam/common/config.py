@@ -148,11 +148,14 @@ class Settings(BaseSettings):
     email_notifications: bool = False
 
     # Opik prompt store — system-of-record for SECTION-PROMPT content (the prompt
-    # masters). When disabled, a local stand-in keeps the platform fully offline and
-    # master-config's snapshot is used; when enabled, published section prompts are
-    # written to (and read back from) an Opik deployment. Fail-open either way.
-    opik_enabled: bool = False
-    opik_url: str = ""          # self-hosted host base, e.g. http://opik:5173/api (blank = SDK default / Comet cloud)
+    # masters). Opik auto-engages ONLY once its PATH (opik_url) is provided; until
+    # then the normal (master-config) database is the store — no manual switch. A
+    # stray API key alone does NOT engage Opik (prevents silent off-network egress
+    # to Comet cloud). opik_enabled is an OPTIONAL override: unset (None) = auto
+    # (path required); false = force the normal DB (kill switch); true = explicit
+    # opt-in that also accepts credentials-only (e.g. Comet cloud) without a URL.
+    opik_enabled: bool | None = None
+    opik_url: str = ""          # self-hosted host base, e.g. https://opik.internal/api (blank = Comet cloud)
     opik_workspace: str = ""    # Comet workspace (cloud); blank for a self-hosted "default"
     opik_project: str = "cam-prompts"
     # Only the NAME of the env var holding the Opik API key is stored (NFR-06); the

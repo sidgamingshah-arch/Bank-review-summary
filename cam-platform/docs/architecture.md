@@ -133,11 +133,15 @@ validated business payload so export/import and schema validation are unaffected
 At generation time the section prompt is read back from Opik by that reference.
 master-config still owns governance (maker-checker, version numbers, status, audit)
 and retains a content **snapshot**, so the platform stays reproducible and runs
-**offline**: when Opik is disabled or unreachable a local stand-in ref is used and
-the snapshot is read — every call is **fail-open**, so Opik can never block a
-publish or a run. The global standing rules and the agent rules remain in
-master-config only. Config: `CAM_OPIK_*` (see §13); status at
-`GET /api/masters/opik/status`.
+**offline**. Opik engages **automatically only once its path is
+provided** (`CAM_OPIK_URL`, ideally a self-hosted in-network endpoint); **until
+then the normal master-config database is the store** — no switch to flip. A stray
+API key alone does **not** engage Opik, so bank prompt text is never silently sent
+to Comet cloud (routing to cloud without a URL takes an explicit
+`CAM_OPIK_ENABLED=true`). When Opik is not configured or is unreachable, the
+snapshot is read; every call is **fail-open**, so Opik can never block a publish or
+a run (`CAM_OPIK_ENABLED=false` is a kill switch). The global standing rules and the agent rules remain in master-config
+only. Config: `CAM_OPIK_*` (see §13); status at `GET /api/masters/opik/status`.
 
 ---
 

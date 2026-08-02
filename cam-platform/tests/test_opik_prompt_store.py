@@ -110,7 +110,31 @@ def test_publish_is_fail_open_when_opik_errors(admin_headers, admin2_headers, mo
         assert _opik_ref(c, admin_headers, "opik_s_boom")["backend"] == "local"
 
 
+def test_normal_db_until_opik_path_provided(monkeypatch):
+    ps = mc.prompt_store
+    monkeypatch.delenv(ps.settings.opik_api_key_env, raising=False)
+    monkeypatch.setattr(ps.settings, "opik_enabled", None)
+    monkeypatch.setattr(ps.settings, "opik_url", "")
+    # nothing configured -> the normal database is the store
+    assert ps.configured() is False and ps.enabled() is False and ps.backend() == "local"
+    # a stray API key ALONE must NOT auto-engage Opik (no off-network prompt egress)
+    monkeypatch.setenv(ps.settings.opik_api_key_env, "secret-key")
+    assert ps.enabled() is False and ps.backend() == "local"
+    # providing the self-hosted PATH engages Opik
+    monkeypatch.setattr(ps.settings, "opik_url", "https://opik.internal/api")
+    assert ps.configured() is True and ps.enabled() is True and ps.backend() == "opik"
+    # explicit opt-in allows credentials-only (e.g. Comet cloud) without a URL
+    monkeypatch.setattr(ps.settings, "opik_url", "")
+    monkeypatch.setattr(ps.settings, "opik_enabled", True)
+    assert ps.enabled() is True
+    # kill switch wins even when configured
+    monkeypatch.setattr(ps.settings, "opik_url", "https://opik.internal/api")
+    monkeypatch.setattr(ps.settings, "opik_enabled", False)
+    assert ps.enabled() is False
+
+
 def test_status_endpoint(admin_headers):
     with TestClient(mc.app) as c:
         st = c.get("/api/masters/opik/status", headers=admin_headers).json()
         assert st["backend"] in ("local", "opik") and "enabled" in st
+        assert "configured" in st and "detail" in st
