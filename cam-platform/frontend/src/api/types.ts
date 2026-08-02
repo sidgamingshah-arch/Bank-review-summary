@@ -236,6 +236,10 @@ export interface MasterSettings {
 export interface OpikStatus {
   enabled: boolean;
   backend: 'opik' | 'local' | string;
+  configured?: boolean;
+  forced_off?: boolean;
+  has_credentials?: boolean;
+  detail?: string;
   url?: string | null;
   project?: string | null;
   sdk_installed?: boolean;

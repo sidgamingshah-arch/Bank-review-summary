@@ -31,8 +31,29 @@ settings = get_settings("master-config")
 _client = None  # cached opik.Opik instance
 
 
+def _api_key() -> str:
+    return (os.environ.get(getattr(settings, "opik_api_key_env", "OPIK_API_KEY"), "") or "").strip()
+
+
+def configured() -> bool:
+    """True once the Opik PATH (self-hosted URL) is provided. A path is required to
+    auto-engage so that a stray ``OPIK_API_KEY`` in the environment can never
+    SILENTLY route bank prompt text to Comet cloud — sending prompts off-network
+    requires an explicit ``CAM_OPIK_ENABLED=true`` opt-in (see :func:`enabled`)."""
+    return bool((getattr(settings, "opik_url", "") or "").strip())
+
+
 def enabled() -> bool:
-    return bool(getattr(settings, "opik_enabled", False))
+    """Use Opik once its path is provided. ``CAM_OPIK_ENABLED=false`` force-disables
+    it (kill switch); unset means auto-detect (path required); ``true`` is an
+    explicit opt-in that also accepts credentials-only (e.g. Comet cloud) with no
+    self-hosted URL. Until then the normal database is the store."""
+    flag = getattr(settings, "opik_enabled", None)
+    if flag is False:
+        return False
+    if flag is True:
+        return configured() or bool(_api_key())
+    return configured()
 
 
 def backend() -> str:
@@ -100,10 +121,17 @@ def fetch(key: str, ref: dict | None) -> str | None:
 
 
 def status() -> dict:
-    """Admin-visible health of the prompt store."""
-    st = {"enabled": enabled(), "backend": backend(),
+    """Admin-visible health of the prompt store. Never returns the API key — only
+    whether one is present (NFR-06)."""
+    forced_off = getattr(settings, "opik_enabled", None) is False
+    st = {"enabled": enabled(), "backend": backend(), "configured": configured(),
+          "forced_off": forced_off, "has_credentials": bool(_api_key()),
           "url": getattr(settings, "opik_url", "") or None,
-          "project": getattr(settings, "opik_project", None) or None}
+          "project": getattr(settings, "opik_project", None) or None,
+          "detail": ("Opik disabled by CAM_OPIK_ENABLED=false; using the normal database"
+                     if forced_off else
+                     "Opik is the system-of-record for section prompts" if enabled() else
+                     "Opik path (CAM_OPIK_URL) not provided; using the normal database")}
     if enabled():
         try:
             import opik  # noqa: F401

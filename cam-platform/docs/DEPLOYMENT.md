@@ -120,14 +120,76 @@ Selected entirely by environment variables — no code change:
 - **Retrieval**: `CAM_RETRIEVAL_BACKEND` = `local` | `azure_search` (Azure AI Search).
 - **Storage**: `CAM_BLOB_BACKEND` = `local` | `azure` (Azure Blob).
 - **Identity**: swap the auth-adapter for the bank IdP (OIDC/SAML) — one service.
-- **Prompt store**: `CAM_OPIK_ENABLED=true` + `CAM_OPIK_*` makes Opik the
-  system-of-record for section prompts (self-hosted or Comet cloud). Disabled = a
-  local snapshot stand-in. Install the extra: `pip install -e .[opik]`.
+- **Prompt store**: setting `CAM_OPIK_URL` (self-hosted, prefer a private
+  in-network endpoint) and/or an API key makes Opik the system-of-record for
+  section prompts; until then the normal database is used. Install the extra:
+  `pip install -e .[opik]`. Prefer **self-hosted Opik** in-bank — Comet cloud would
+  send prompt text off-network (see the security checklist below).
 - **Edge**: services behind the real APIM; the built-in gateway policies mirror it.
 
 See `docs/architecture.md` (§14) and `docs/LIVE_RUN.md` for provider/RAG specifics.
 
 ---
+
+## Security checklist (bank deployment)
+
+Work through this before go-live. The platform already implements the mechanisms;
+this is the operator's side of the shared responsibility.
+
+**Ingress & identity**
+- [ ] Expose **only the gateway** (:8080) via the bank's reverse proxy / APIM with
+      **TLS**; keep services `8101–8108` on loopback (the systemd unit binds them to
+      `127.0.0.1`). The gateway is the sole authenticated entry point.
+- [ ] Replace the dev IdP stub with the **bank IdP** (OIDC/SAML) — swap the
+      auth-adapter service only.
+- [ ] Set a strong **`CAM_JWT_SECRET`** (≥32 random bytes) from vault; rotate it;
+      keep the JWT TTL short (`CAM_JWT_TTL_MINUTES`).
+
+**Secrets (NFR-06)**
+- [ ] All secrets come from env/vault. API keys and the SMTP/Opik passwords are
+      referenced **by env-var name** and read at call time — never stored on
+      Settings, returned in responses, or logged. Verify `/api/masters/opik/status`
+      and `/api/masters/llm-config` return only *whether* a key is set.
+- [ ] `chmod 600` the env file (`/etc/cam/cam-platform.env`); it holds secrets.
+- [ ] No secrets in the repo, the wheelhouse, images, or logs.
+
+**Least privilege & isolation**
+- [ ] Run as a non-root service account (`cam`); the systemd unit sets
+      `NoNewPrivileges`, `ProtectSystem=full`, `ProtectHome`, `PrivateTmp`.
+- [ ] Scope the PostgreSQL account to its own database; encrypt DB + blob at rest
+      per bank standard; enforce TLS to the database.
+
+**Network egress (default-deny, allow only what's configured)**
+- [ ] **Model plane** — genai → the approved LLM endpoint only (prefer in-bank /
+      Azure). The gateway already blocks end-user tokens from `/api/genai` (NFR-10).
+- [ ] **Retrieval** — embeddings / Azure AI Search endpoints, if RAG is on.
+- [ ] **Prompt store (Opik)** — prefer **self-hosted, in-network** Opik over TLS.
+      Opik engages only when `CAM_OPIK_URL` (the path) is set; a stray `OPIK_API_KEY`
+      alone will **not** route prompts off-network. Opik holds section-prompt
+      *content*, so it is inside the trust boundary: access-control and audit it like
+      any config store. The master-config DB keeps a tamper-evident snapshot + audit
+      as the fallback. (Comet **cloud** — no URL + explicit `CAM_OPIK_ENABLED=true` —
+      sends prompt text off-network; avoid unless explicitly approved.)
+- [ ] **Connectors** — third-party news/search send the borrower name + industry
+      off-network; keep **off** unless the vendor and egress are vetted. They are
+      called out-of-gateway with only their own key (never the internal token).
+- [ ] **Email** — SMTP relay over STARTTLS/SSL.
+
+**Content safety**
+- [ ] Wire the **VAF AV scan** to the bank's real AV/ICAP — the EICAR stub is
+      dev-only. Quarantined content is never stored or used.
+- [ ] Prompt-injection defence (documents/retrieved passages/connector items wrapped
+      as inert data) is on by default; keep the global standing rules published.
+
+**Supply chain**
+- [ ] Install from the pinned [`requirements.lock.txt`](../deploy/requirements.lock.txt)
+      / offline wheelhouse with `--no-index`; nothing is fetched at run time.
+      Optionally enforce `--require-hashes` (see OFFLINE_INSTALL.md).
+
+**Audit & monitoring**
+- [ ] Ship gateway access logs + the hash-chained audit trail to the bank SIEM;
+      the `X-Correlation-ID` spans upload → generation → edit → export. Periodically
+      call the audit `verify-chain` endpoint.
 
 ## Configuration & operations
 

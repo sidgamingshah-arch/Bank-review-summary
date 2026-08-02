@@ -409,24 +409,19 @@ export function SettingsTab() {
 
         <h3 className="settings-group">Prompt store</h3>
         <div className="hint">
-          Section prompts are stored in{' '}
-          {opik?.backend === 'opik' ? (
+          Section prompts:{' '}
+          <strong>{opik?.backend === 'opik' ? 'Opik (system-of-record)' : 'normal database'}</strong>
+          {opik?.backend === 'opik' && opik?.project ? (
             <>
-              <strong>Opik</strong> (system-of-record)
-              {opik?.reachable === false ? ' — configured but unreachable; using the local snapshot' : ''}
-              {opik?.project ? (
-                <>
-                  {' '}· project <code>{opik.project}</code>
-                </>
-              ) : null}
+              {' '}· project <code>{opik.project}</code>
             </>
-          ) : (
-            <>
-              a <strong>local snapshot</strong> stand-in — set <code>CAM_OPIK_*</code> to make Opik
-              the system-of-record
-            </>
-          )}
-          . master-config keeps maker-checker, versioning and audit either way.
+          ) : null}
+          {opik?.backend === 'opik' && opik?.reachable === false
+            ? ' — configured but unreachable; falling back to the database snapshot'
+            : ''}
+          . {opik?.detail ? `${opik.detail}. ` : ''}
+          Until Opik's path and credentials are provided (<code>CAM_OPIK_*</code>) the normal
+          database is used; master-config keeps maker-checker, versioning and audit either way.
         </div>
 
         <h3 className="settings-group">External connectors</h3>
