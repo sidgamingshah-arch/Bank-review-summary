@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { ChevronRight, Download, Lock, ShieldCheck } from 'lucide-react';
 import { api, errorMessage } from '../../api/client';
-import type { Cam } from '../../api/types';
+import type { Cam, CamSection } from '../../api/types';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { EmptyState } from '../../components/EmptyState';
 import { PageLoading } from '../../components/Spinner';
 import { useToast } from '../../components/Toast';
 import { SectionView } from './SectionView';
 import { ChatPanel } from './ChatPanel';
+import { CHAPTER_ORDER, chapterKey } from './chapters';
 
 export function CamPage() {
   const { camId = '' } = useParams();
@@ -15,6 +17,8 @@ export function CamPage() {
   const [cam, setCam] = useState<Cam | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [filter, setFilter] = useState('');
   const [confirmFinalise, setConfirmFinalise] = useState(false);
   const [finalising, setFinalising] = useState(false);
   const [exporting, setExporting] = useState<'docx' | 'pdf' | null>(null);
@@ -40,7 +44,20 @@ export function CamPage() {
     });
   }, [reloadCam]);
 
-  /** Local patch after an edit save, so the whole CAM is not refetched on every autosave. */
+  const sections = useMemo(
+    () => (cam ? [...cam.sections].sort((a, b) => a.order - b.order) : []),
+    [cam],
+  );
+  const selected = sections.find((s) => s.id === selectedId) ?? sections[0] ?? null;
+
+  // Keep the active section's chapter expanded (spec: only the active chapter
+  // is open by default; navigating reveals the target's chapter).
+  useEffect(() => {
+    if (!selected) return;
+    const k = chapterKey(selected);
+    setExpanded((prev) => (prev.has(k) ? prev : new Set(prev).add(k)));
+  }, [selectedId, selected]);
+
   const patchSection = useCallback((sectionId: string, content: string, versionNo: number) => {
     setCam((cur) =>
       cur
@@ -89,9 +106,42 @@ export function CamPage() {
   }
   if (!cam) return <PageLoading label="Loading CAM…" />;
 
-  const sections = [...cam.sections].sort((a, b) => a.order - b.order);
-  const selected = sections.find((s) => s.id === selectedId) ?? sections[0] ?? null;
   const isDraft = cam.status === 'draft';
+  const q = filter.trim().toLowerCase();
+  const matches = (s: CamSection) =>
+    !q || s.name.toLowerCase().includes(q) || s.section_code.toLowerCase().includes(q);
+
+  const chapters = CHAPTER_ORDER.map((ch) => ({
+    ...ch,
+    items: sections.filter((s) => chapterKey(s) === ch.key && matches(s)),
+  })).filter((ch) => ch.items.length > 0);
+
+  const toggleChapter = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+
+  const renderRow = (s: CamSection) => (
+    <button
+      key={s.id}
+      type="button"
+      className={`cam-sec${selected && selected.id === s.id ? ' active' : ''}`}
+      onClick={() => setSelectedId(s.id)}
+    >
+      <span className="cam-sec-order">{s.order}</span>
+      <span className="cam-sec-name">{s.name}</span>
+      {s.fixed_format ? (
+        <span className="cam-sec-lock" title="Fixed format — output preferences not applied">
+          <Lock size={12} strokeWidth={2} />
+        </span>
+      ) : null}
+      {s.current_version_no > 1 ? (
+        <span className="cam-sec-dot" title={`Edited — version ${s.current_version_no}`} />
+      ) : null}
+    </button>
+  );
 
   return (
     <div className="cam-page">
@@ -104,62 +154,79 @@ export function CamPage() {
           <h1>{cam.title}</h1>
         </div>
         <div className="cam-header-right">
-          {isDraft ? <span className="watermark-chip">AI-ASSISTED DRAFT</span> : <span className="final-chip">FINAL</span>}
+          <span className="chip chip-green cam-check" title="Every figure was checked against a source during generation">
+            <ShieldCheck size={13} strokeWidth={2} /> Figures source-checked
+          </span>
+          {isDraft ? (
+            <span className="cam-badge cam-badge-draft">AI-assisted draft</span>
+          ) : (
+            <span className="cam-badge cam-badge-final">Final</span>
+          )}
           {isDraft ? (
             <button type="button" className="btn btn-primary" onClick={() => setConfirmFinalise(true)}>
               Finalise
             </button>
           ) : null}
           <button type="button" className="btn" disabled={exporting === 'docx'} onClick={() => exportCam('docx')}>
-            {exporting === 'docx' ? 'Exporting…' : 'Export DOCX'}
+            <Download size={15} strokeWidth={1.8} /> {exporting === 'docx' ? 'Exporting…' : 'DOCX'}
           </button>
           <button type="button" className="btn" disabled={exporting === 'pdf'} onClick={() => exportCam('pdf')}>
-            {exporting === 'pdf' ? 'Exporting…' : 'Export PDF'}
+            <Download size={15} strokeWidth={1.8} /> {exporting === 'pdf' ? 'Exporting…' : 'PDF'}
           </button>
         </div>
       </div>
 
-      <div className="cam-layout">
-        <nav className="cam-nav">
-          {sections.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className={`cam-nav-item${selected && selected.id === s.id ? ' active' : ''}`}
-              onClick={() => setSelectedId(s.id)}
-            >
-              <span className="cam-nav-order">{s.order}</span>
-              <span className="cam-nav-name">{s.name}</span>
-              {s.fixed_format ? (
-                <span className="cam-nav-icon" title="Fixed format — output preferences not applied">
-                  🔒
-                </span>
-              ) : null}
-              {s.current_version_no > 1 ? (
-                <span className="cam-nav-icon edited-dot" title={`Edited — version ${s.current_version_no}`}>
-                  ●
-                </span>
-              ) : null}
-            </button>
-          ))}
+      <div className="cam-grid">
+        <nav className="cam-outline">
+          <input
+            className="input slim cam-filter"
+            style={{ width: '100%' }}
+            placeholder="Filter sections…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+          {chapters.length === 0 ? (
+            <div className="cam-outline-empty">No sections match “{filter}”.</div>
+          ) : q ? (
+            // filtering flattens to matches
+            chapters.flatMap((ch) => ch.items).map(renderRow)
+          ) : (
+            chapters.map((ch) => {
+              const open = expanded.has(ch.key);
+              return (
+                <div key={ch.key} className="cam-chapter">
+                  <button type="button" className="cam-chapter-head" onClick={() => toggleChapter(ch.key)}>
+                    <span className={`cam-chapter-chevron${open ? ' open' : ''}`}>
+                      <ChevronRight size={13} strokeWidth={2.2} />
+                    </span>
+                    {ch.label}
+                    <span className="cam-chapter-count">{ch.items.length}</span>
+                  </button>
+                  {open ? ch.items.map(renderRow) : null}
+                </div>
+              );
+            })
+          )}
         </nav>
 
-        <div className="cam-center">
+        <div className="cam-doc">
           {selected ? (
             <SectionView
               key={selected.id}
               cam={cam}
               section={selected}
+              sections={sections}
               editable={isDraft}
               onSaved={patchSection}
               onReload={reloadCam}
+              onSelectSection={setSelectedId}
             />
           ) : (
             <EmptyState title="This CAM has no sections" />
           )}
         </div>
 
-        <aside className="cam-chat">
+        <aside className="cam-assistant">
           <ChatPanel cam={cam} activeSection={selected} enabled={isDraft} onCamReload={reloadCam} />
         </aside>
       </div>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ChevronDown, ChevronRight, Paperclip, Send, Sparkles, X } from 'lucide-react';
 import { api, errorMessage } from '../../api/client';
 import { uploadCaseDocument } from '../../api/uploads';
 import type { Cam, CamSection, ChatMessage, ChatResponse, ChatScope, Suggestion, SuggestionDecision } from '../../api/types';
@@ -124,7 +125,9 @@ export function ChatPanel({ cam, activeSection, enabled, onCamReload }: Props) {
   return (
     <div className="chat-panel">
       <div className="chat-head">
-        <h3>AI assistant</h3>
+        <h3>
+          <Sparkles size={16} strokeWidth={1.8} /> AI assistant
+        </h3>
         <div className="scope-toggle" role="tablist" aria-label="Chat scope">
           <button
             type="button"
@@ -149,7 +152,8 @@ export function ChatPanel({ cam, activeSection, enabled, onCamReload }: Props) {
       {pending.length > 0 ? (
         <div className="pending-strip">
           <button type="button" className="collapsible-toggle" onClick={() => setPendingOpen(!pendingOpen)}>
-            {pendingOpen ? '▾' : '▸'} Pending suggestions ({pending.length})
+            {pendingOpen ? <ChevronDown size={13} strokeWidth={2.2} /> : <ChevronRight size={13} strokeWidth={2.2} />} Pending
+            suggestions ({pending.length})
           </button>
           {pendingOpen
             ? pending.map((s) => (
@@ -210,9 +214,9 @@ export function ChatPanel({ cam, activeSection, enabled, onCamReload }: Props) {
           <div className="chip-row">
             {attachments.map((f, i) => (
               <span key={`${f.name}-${i}`} className="chip-token">
-                📎 {f.name}
+                <Paperclip size={11} strokeWidth={2} /> {f.name}
                 <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setAttachments(attachments.filter((_, j) => j !== i))}>
-                  ✕
+                  <X size={11} strokeWidth={2.4} />
                 </button>
               </span>
             ))}
@@ -239,7 +243,7 @@ export function ChatPanel({ cam, activeSection, enabled, onCamReload }: Props) {
             onClick={() => fileInput.current?.click()}
             title="Attach files (uploaded to the case, origin: chat)"
           >
-            📎 Attach
+            <Paperclip size={14} strokeWidth={1.9} /> Attach
           </button>
           <input
             ref={fileInput}
@@ -253,7 +257,7 @@ export function ChatPanel({ cam, activeSection, enabled, onCamReload }: Props) {
             }}
           />
           <button type="button" className="btn btn-sm btn-primary" disabled={!enabled || sending || !input.trim()} onClick={send}>
-            {sending ? 'Sending…' : 'Send'}
+            <Send size={13} strokeWidth={1.9} /> {sending ? 'Sending…' : 'Send'}
           </button>
         </div>
       </div>
