@@ -25,8 +25,9 @@ from . import engine as eng
 from . import prompt_store
 from .csv_io import parse_kpi_csv, render_kpi_csv
 from .models import DEFAULT_SETTINGS, MTYPES, MasterItem, MasterVersion, Setting
-from .schemas import AGENT_RULE_KEYS, GLOBAL_PROMPT_KEY, validate_payload
-from .xlsx_io import build_template_workbook, parse_workbook
+from .schemas import AGENT_RULE_KEYS, GLOBAL_PROMPT_KEY, is_section_prompt, validate_payload
+from .xlsx_io import (TYPE_SHEETS, build_template_workbook, build_type_workbook,
+                      parse_type_workbook, parse_workbook)
 
 XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -50,10 +51,25 @@ def _mtype(mtype_segment: str) -> str:
     return MTYPES[mtype_segment]
 
 
+def _codelist_codes(db, list_key: str) -> set[str]:
+    """Codes defined in a code-list master's latest version (empty if the list
+    doesn't exist yet). Used to validate template segment/relationship references."""
+    item = eng.get_item(db, "codelist", list_key)
+    if not item:
+        return set()
+    versions = eng.versions_of(db, item)
+    if not versions:
+        return set()
+    latest = max(versions, key=lambda v: v.version_no)
+    return {e["code"] for e in (latest.payload or {}).get("entries", []) if e.get("code")}
+
+
 def _catalogue(db) -> dict[str, set[str]]:
     return {"doctype_codes": eng.item_keys(db, "doctype"),
             "prompt_keys": eng.item_keys(db, "prompt"),
-            "industry_codes": eng.item_keys(db, "industry")}
+            "industry_codes": eng.item_keys(db, "industry"),
+            "segment_codes": _codelist_codes(db, "segment"),
+            "relationship_codes": _codelist_codes(db, "relationship")}
 
 
 def _validate(db, mtype: str, key: str, payload: dict) -> dict:
@@ -289,6 +305,35 @@ def published_doctypes(principal: Principal = Depends(require("masters:read"))):
         return out
 
 
+@app.get("/api/masters/published/sections")
+def published_sections(principal: Principal = Depends(require("masters:read"))):
+    """Published section prompts, for the template editor's section dropdown:
+    `[{code, name}]` (excludes the global standing rules and agent-role prompts)."""
+    with SessionLocal() as db:
+        out = []
+        for item in db.scalars(select(MasterItem).where(MasterItem.mtype == "prompt")).all():
+            if not is_section_prompt(item.key):
+                continue
+            v = eng.published_version(db, item)
+            if v:
+                out.append({"code": item.key, "name": v.payload.get("section_name", item.key)})
+        return sorted(out, key=lambda x: x["code"])
+
+
+@app.get("/api/masters/published/codelist/{key}")
+def published_codelist(key: str, principal: Principal = Depends(require("masters:read"))):
+    """Active entries of a published code list, for dropdowns (e.g. segment,
+    relationship): `{key, entries: [{code, label}]}`. Empty if not published."""
+    with SessionLocal() as db:
+        item = eng.get_item(db, "codelist", key)
+        v = eng.published_version(db, item) if item else None
+        entries = [] if not v else [
+            {"code": e["code"], "label": e.get("label", e["code"])}
+            for e in sorted((v.payload or {}).get("entries", []), key=lambda e: (e.get("order", 0), e.get("code", "")))
+            if e.get("active", True)]
+        return {"key": key, "entries": entries}
+
+
 @app.get("/api/masters/resolve/template/{key}")
 def resolve_template(key: str, principal: Principal = Depends(require("masters:read"))):
     """Runtime resolution for generation (FR-D01): template → section prompts →
@@ -471,7 +516,8 @@ class BundleImport(BaseModel):
 # import order honours referential validation: doc types and taxonomy first,
 # then prompts (validated against doc types), KPI sets (against taxonomy),
 # templates last (against prompts + doc types)
-_IMPORT_ORDER = {"doctype": 0, "industry": 1, "prompt": 2, "kpi_set": 3, "template": 4}
+_IMPORT_ORDER = {"codelist": 0, "doctype": 1, "industry": 2, "prompt": 3, "kpi_set": 4,
+                 "template": 5}
 
 
 @app.get("/api/masters/export-bundle")
@@ -568,6 +614,40 @@ def bulk_upload(file: UploadFile,
     result["errors"] = parse_errors + result["errors"]
     audit.emit(settings, action="master.bulk_uploaded", entity_type="masters",
                entity_id="bulk", principal=principal,
+               detail={k: len(result[k]) for k in ("created", "updated", "unchanged", "errors")})
+    return {**result, "note": "imported versions are drafts; submit + approve to publish"}
+
+
+# ---- per-master-type Excel (declared before the /{key} routes so the literal
+# 'xlsx-template'/'xlsx-upload' segments are not captured as a {key}) -----------
+
+@app.get("/api/masters/{mtype_segment}/xlsx-template")
+def xlsx_type_template(mtype_segment: str,
+                       principal: Principal = Depends(require("masters:read"))):
+    """Download a single master type's Excel template (per-master upload)."""
+    _mtype(mtype_segment)
+    if mtype_segment not in TYPE_SHEETS:
+        raise ApiError.not_found(f"Excel template for '{mtype_segment}'")
+    return Response(build_type_workbook(mtype_segment), media_type=XLSX_MEDIA,
+                    headers={"Content-Disposition":
+                             f"attachment; filename=cam-{mtype_segment}-template.xlsx"})
+
+
+@app.post("/api/masters/{mtype_segment}/xlsx-upload")
+def xlsx_type_upload(mtype_segment: str, file: UploadFile,
+                     principal: Principal = Depends(require("masters:draft"))):
+    """Bulk-create/update ONE master type from its Excel template. Every entry
+    lands as a DRAFT (maker-checker unchanged); returns a per-entry report."""
+    _mtype(mtype_segment)
+    if mtype_segment not in TYPE_SHEETS:
+        raise ApiError.not_found(f"Excel upload for '{mtype_segment}'")
+    entries, parse_errors = parse_type_workbook(mtype_segment, file.file.read())
+    with SessionLocal() as db:
+        result = _import_entries(db, entries, principal, f"{mtype_segment} Excel upload")
+        db.commit()
+    result["errors"] = parse_errors + result["errors"]
+    audit.emit(settings, action="master.bulk_uploaded", entity_type="masters",
+               entity_id=mtype_segment, principal=principal,
                detail={k: len(result[k]) for k in ("created", "updated", "unchanged", "errors")})
     return {**result, "note": "imported versions are drafts; submit + approve to publish"}
 

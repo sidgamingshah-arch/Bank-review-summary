@@ -106,7 +106,7 @@ egress rules — this separation is the backbone of the security model:
 
 ## 3. The masters model (FR-A\*, ADR-0003)
 
-Five master types, one generic versioned engine (`master-config`):
+Master types, one generic versioned engine (`master-config`):
 
 - **Templates** — ordered section list; each section references a section-prompt
   and may be *conditional* (`include_if_doctype`) or *fixed-format*, and may
@@ -117,6 +117,12 @@ Five master types, one generic versioned engine (`master-config`):
 - **Global standing rules** — house style + guardrails prepended to every prompt.
 - **Document types** — the doctypes used for classification and section mapping.
 - **KPI sets** — per-industry KPI definitions rendered into the prompt.
+- **Code lists** — managed code-value reference lists (`segment`, `relationship`,
+  …) of `{code, label, active}`. The front end reads the published entries to
+  populate dropdowns; a template's `segment`/`relationship` are codes validated
+  against these lists (and its section codes are picked from the published section
+  prompts). Each master type also has its own Excel template download + upload,
+  and admin form fields carry inline info tooltips.
 
 Every master is **versioned** and governed by **maker-checker**: a maker drafts a
 new version, a *different* checker approves it (`maker_checker_violation` on

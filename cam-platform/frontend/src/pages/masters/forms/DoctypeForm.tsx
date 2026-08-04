@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { DoctypePayload } from '../../../api/types';
 import { ChipsInput } from '../../../components/ChipsInput';
+import { InfoTip } from '../../../components/InfoTip';
 
 interface Props {
   value: DoctypePayload;
@@ -33,11 +34,23 @@ export function DoctypeForm({ value, onChange, isNew }: Props) {
         <ChipsInput values={value.synonyms} onChange={(v) => onChange({ ...value, synonyms: v })} placeholder="synonym…" />
       </div>
       <div className="field">
-        <label>Keywords</label>
+        <label>
+          Keywords
+          <InfoTip
+            label="Keywords"
+            text="Terms used by the keyword classifier (and as a fallback when AI tagging is off) to auto-detect this document type from a file's text."
+          />
+        </label>
         <ChipsInput values={value.keywords} onChange={(v) => onChange({ ...value, keywords: v })} placeholder="keyword…" />
       </div>
       <div className="field">
-        <label>Feeds sections (optional)</label>
+        <label>
+          Feeds sections (optional)
+          <InfoTip
+            label="Feeds sections"
+            text="Memo sections this document type typically grounds. Advisory metadata that helps map documents to sections."
+          />
+        </label>
         <ChipsInput values={value.feeds_sections ?? []} onChange={(v) => onChange({ ...value, feeds_sections: v })} placeholder="section_code…" />
       </div>
       <label className="check-pill standalone">

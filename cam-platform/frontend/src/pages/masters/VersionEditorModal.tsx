@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api, ApiError, errorMessage } from '../../api/client';
 import type {
+  CodeListPayload,
   DoctypePayload,
   IndustryPayload,
   KpiSetPayload,
@@ -16,6 +17,7 @@ import { TemplateForm } from './forms/TemplateForm';
 import { DoctypeForm } from './forms/DoctypeForm';
 import { IndustryForm } from './forms/IndustryForm';
 import { KpiSetForm } from './forms/KpiSetForm';
+import { CodeListForm } from './forms/CodeListForm';
 
 interface Props {
   mtype: MasterType;
@@ -60,6 +62,12 @@ function emptyPayload(mtype: MasterType): MasterPayload {
       return { sector_code: '', sector_name: '', industry_code: '', industry_name: '' } satisfies IndustryPayload;
     case 'kpi-sets':
       return { industry_code: '', kpis: [] } satisfies KpiSetPayload;
+    case 'codelists':
+      return {
+        name: '',
+        description: '',
+        entries: [{ code: '', label: '', active: true, order: 1 }],
+      } satisfies CodeListPayload;
   }
 }
 
@@ -77,6 +85,8 @@ function deriveKey(mtype: MasterType, payload: MasterPayload, slugDraft: string)
       return (payload as IndustryPayload).industry_code.trim();
     case 'kpi-sets':
       return (payload as KpiSetPayload).industry_code.trim();
+    case 'codelists':
+      return (payload as CodeListPayload).name.trim();
   }
 }
 
@@ -86,6 +96,7 @@ const TITLES: Record<MasterType, string> = {
   doctypes: 'Document type',
   industries: 'Industry',
   'kpi-sets': 'KPI set',
+  codelists: 'Code list',
 };
 
 export function VersionEditorModal({ mtype, mode, itemKey, initialPayload, onClose, onSaved }: Props) {
@@ -157,6 +168,8 @@ export function VersionEditorModal({ mtype, mode, itemKey, initialPayload, onClo
         <DoctypeForm value={payload as DoctypePayload} onChange={setPayload} isNew={isNew} />
       ) : mtype === 'industries' ? (
         <IndustryForm value={payload as IndustryPayload} onChange={setPayload} isNew={isNew} />
+      ) : mtype === 'codelists' ? (
+        <CodeListForm value={payload as CodeListPayload} onChange={setPayload} isNew={isNew} />
       ) : (
         <KpiSetForm value={payload as KpiSetPayload} onChange={setPayload} isNew={isNew} />
       )}

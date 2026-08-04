@@ -9,7 +9,7 @@ from cam.common.db import Base, iso, new_id, utcnow
 
 # path segment <-> internal master type
 MTYPES = {"prompts": "prompt", "templates": "template", "doctypes": "doctype",
-          "industries": "industry", "kpi-sets": "kpi_set"}
+          "industries": "industry", "kpi-sets": "kpi_set", "codelists": "codelist"}
 
 STATUSES = ("draft", "in_review", "published", "retired", "rejected")
 
