@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from '../../api/client';
-import type { ItemSummary, KpiBulkReport, MasterType } from '../../api/types';
+import { uploadMasterTypeXlsx } from '../../api/uploads';
+import type { ItemSummary, KpiBulkReport, MastersTypeReport, MasterType } from '../../api/types';
 import { EmptyState } from '../../components/EmptyState';
 import { Modal } from '../../components/Modal';
 import { Spinner } from '../../components/Spinner';
@@ -18,6 +19,7 @@ const TABS: { id: string; label: string }[] = [
   { id: 'doctypes', label: 'Doc Types' },
   { id: 'industries', label: 'Industries' },
   { id: 'kpi-sets', label: 'KPI Sets' },
+  { id: 'codelists', label: 'Code lists' },
   { id: 'bulk', label: 'Bulk import' },
   { id: 'settings', label: 'Settings' },
 ];
@@ -25,11 +27,14 @@ const TABS: { id: string; label: string }[] = [
 function MasterWorkbench({ mtype }: { mtype: MasterType }) {
   const toast = useToast();
   const fileInput = useRef<HTMLInputElement>(null);
+  const xlsxInput = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<ItemSummary[] | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [bulkReport, setBulkReport] = useState<KpiBulkReport | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [xlsxReport, setXlsxReport] = useState<MastersTypeReport | null>(null);
+  const [xlsxBusy, setXlsxBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -71,6 +76,26 @@ function MasterWorkbench({ mtype }: { mtype: MasterType }) {
     }
   };
 
+  const downloadXlsxTemplate = async () => {
+    try {
+      await api.download(`/api/masters/${mtype}/xlsx-template`, `cam-${mtype}-template.xlsx`);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
+
+  const uploadXlsx = async (file: File) => {
+    setXlsxBusy(true);
+    try {
+      setXlsxReport(await uploadMasterTypeXlsx(mtype, file));
+      load();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setXlsxBusy(false);
+    }
+  };
+
   return (
     <div className="masters-split">
       <div className="masters-list card">
@@ -98,6 +123,23 @@ function MasterWorkbench({ mtype }: { mtype: MasterType }) {
                 </button>
               </>
             ) : null}
+            <button type="button" className="btn btn-sm" onClick={downloadXlsxTemplate} title="Download this master's Excel template">
+              Excel template
+            </button>
+            <button type="button" className="btn btn-sm" disabled={xlsxBusy} onClick={() => xlsxInput.current?.click()}>
+              {xlsxBusy ? 'Uploading…' : 'Excel upload'}
+            </button>
+            <input
+              ref={xlsxInput}
+              type="file"
+              accept=".xlsx"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) uploadXlsx(f);
+                e.target.value = '';
+              }}
+            />
             <button type="button" className="btn btn-sm btn-primary" onClick={() => setCreating(true)}>
               New
             </button>
@@ -195,6 +237,56 @@ function MasterWorkbench({ mtype }: { mtype: MasterType }) {
               )}
             </div>
             <p className="hint">Bulk-created versions land as drafts — submit and approve them via maker-checker as usual.</p>
+          </div>
+        </Modal>
+      ) : null}
+
+      {xlsxReport ? (
+        <Modal title="Excel upload report" onClose={() => setXlsxReport(null)} wide>
+          <div className="bulk-report">
+            <div>
+              <h4>Created ({xlsxReport.created.length})</h4>
+              {xlsxReport.created.length === 0 ? (
+                <span className="muted">none</span>
+              ) : (
+                xlsxReport.created.map((k) => (
+                  <span key={k.entry} className="chip chip-green mono">{k.entry} v{k.version_no}</span>
+                ))
+              )}
+            </div>
+            <div>
+              <h4>Updated ({xlsxReport.updated.length})</h4>
+              {xlsxReport.updated.length === 0 ? (
+                <span className="muted">none</span>
+              ) : (
+                xlsxReport.updated.map((k) => (
+                  <span key={k.entry} className="chip chip-blue mono">{k.entry} v{k.version_no}</span>
+                ))
+              )}
+            </div>
+            {xlsxReport.unchanged.length > 0 ? (
+              <div>
+                <h4>Unchanged ({xlsxReport.unchanged.length})</h4>
+                {xlsxReport.unchanged.map((k) => (
+                  <span key={k} className="chip mono">{k}</span>
+                ))}
+              </div>
+            ) : null}
+            <div>
+              <h4>Errors ({xlsxReport.errors.length})</h4>
+              {xlsxReport.errors.length === 0 ? (
+                <span className="muted">none</span>
+              ) : (
+                <ul className="error-list">
+                  {xlsxReport.errors.map((e, i) => (
+                    <li key={i}>
+                      <span className="chip chip-red">{e.entry ?? (e.sheet ? `${e.sheet} row ${e.row}` : 'row')}</span> {e.message}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <p className="hint">Imported versions land as drafts — submit and approve them via maker-checker as usual.</p>
           </div>
         </Modal>
       ) : null}

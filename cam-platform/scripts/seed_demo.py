@@ -184,6 +184,17 @@ def seed(client: httpx.Client) -> dict:
     admin2 = login(client, "admin2")
     versions: dict[str, int] = {}
 
+    # reference code lists (front-end dropdown sources) — published before templates
+    versions["codelist:segment"] = publish(client, admin1, admin2, "codelists", "segment", {
+        "name": "segment", "description": "Lending / relationship segment",
+        "entries": [{"code": "corporate", "label": "Corporate", "active": True, "order": 1},
+                    {"code": "fi", "label": "Financial Institution", "active": True, "order": 2},
+                    {"code": "project_finance", "label": "Project Finance", "active": True, "order": 3}]})
+    versions["codelist:relationship"] = publish(client, admin1, admin2, "codelists", "relationship", {
+        "name": "relationship", "description": "Borrower relationship with the bank",
+        "entries": [{"code": "etb", "label": "Existing to Bank (ETB)", "active": True, "order": 1},
+                    {"code": "ntb", "label": "New to Bank (NTB)", "active": True, "order": 2}]})
+
     for code, (name, synonyms, keywords) in DOCTYPES.items():
         versions[f"doctype:{code}"] = publish(client, admin1, admin2, "doctypes", code, {
             "code": code, "name": name, "description": name, "synonyms": synonyms,

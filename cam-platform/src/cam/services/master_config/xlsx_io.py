@@ -40,6 +40,8 @@ TEMPLATE_COLS = ["key", "name", "segment", "relationship", "template_instruction
 TEMPLATE_SECTION_COLS = ["template_key", "order", "section_code", "mandatory",
                          "include_if_doctype", "length_guidance", "fixed_format",
                          "depends_on", "depends_on_all"]
+# one row per code-list entry; rows sharing a list_key form one list (e.g. segment)
+CODELIST_COLS = ["list_key", "list_name", "description", "code", "label", "active", "order"]
 
 EXAMPLES: dict[str, list[list[Any]]] = {
     "doctypes": [["example_audited_financials", "Audited financials",
@@ -63,12 +65,25 @@ EXAMPLES: dict[str, list[list[Any]]] = {
                            "250 words", True, "", True],
                           ["example_corp_template", 2, "financial_analysis", True, "",
                            "", False, "", False]],
+    "codelists": [["example_segment", "Business segment", "Lending segment",
+                   "corporate", "Corporate", True, 1],
+                  ["example_segment", "Business segment", "Lending segment",
+                   "sme", "SME", True, 2]],
 }
 
 _SHEET_COLS = {
+    "codelists": CODELIST_COLS,
     "doctypes": DOCTYPE_COLS, "industries": INDUSTRY_COLS, "prompts": PROMPT_COLS,
     "kpi_sets": KPI_COLS, "templates": TEMPLATE_COLS,
     "template_sections": TEMPLATE_SECTION_COLS,
+}
+
+# master-type URL segment -> the workbook sheet(s) that make it up (for per-type
+# download/upload). 'templates' spans two linked sheets.
+TYPE_SHEETS = {
+    "codelists": ["codelists"], "doctypes": ["doctypes"], "industries": ["industries"],
+    "prompts": ["prompts"], "kpi-sets": ["kpi_sets"],
+    "templates": ["templates", "template_sections"],
 }
 
 README_LINES = [
@@ -91,6 +106,8 @@ README_LINES = [
     "industries first, then prompts, KPI sets, and templates last.",
     "",
     "Sheets:",
+    "  codelists          — one row per code-list entry; rows sharing a list_key "
+    "(e.g. segment, relationship) form one list",
     "  doctypes           — one row per document type (key column: code)",
     "  industries         — one row per industry (key column: industry_code)",
     "  prompts            — one row per section/agent prompt (key: section_code)",
@@ -108,25 +125,42 @@ README_LINES = [
 
 
 # ------------------------------------------------------------------ build
-def build_template_workbook() -> bytes:
+def _append_sheet(wb, sheet: str) -> None:
+    cols = _SHEET_COLS[sheet]
+    w = wb.create_sheet(sheet)
+    w.append(cols)
+    for c in range(1, len(cols) + 1):
+        w.cell(row=1, column=c).font = Font(bold=True)
+        w.column_dimensions[w.cell(row=1, column=c).column_letter].width = 22
+    for row in EXAMPLES.get(sheet, []):
+        w.append(row)
+
+
+def _workbook(readme: list[str], sheets: list[str]) -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "README"
-    for line in README_LINES:
+    for line in readme:
         ws.append([line])
     ws.column_dimensions["A"].width = 100
-
-    for sheet, cols in _SHEET_COLS.items():
-        w = wb.create_sheet(sheet)
-        w.append(cols)
-        for c in range(1, len(cols) + 1):
-            w.cell(row=1, column=c).font = Font(bold=True)
-            w.column_dimensions[w.cell(row=1, column=c).column_letter].width = 22
-        for row in EXAMPLES.get(sheet, []):
-            w.append(row)
+    for sheet in sheets:
+        _append_sheet(wb, sheet)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def build_template_workbook() -> bytes:
+    """The combined workbook — one sheet per master type (bundle upload)."""
+    return _workbook(README_LINES, list(_SHEET_COLS.keys()))
+
+
+def build_type_workbook(mtype_segment: str) -> bytes:
+    """A single-master-type workbook (per-master download). 'templates' spans its
+    two linked sheets (templates + template_sections)."""
+    sheets = TYPE_SHEETS[mtype_segment]
+    readme = [f"CAM masters — bulk upload: {mtype_segment}", ""] + README_LINES[2:]
+    return _workbook(readme, sheets)
 
 
 # ------------------------------------------------------------------ parse helpers
@@ -209,6 +243,7 @@ def parse_workbook(raw: bytes) -> tuple[list[dict], list[dict]]:
 
     entries: list[dict] = []
     try:
+        entries += _parse_codelists(wb, errors)
         entries += _parse_doctypes(wb, errors)
         entries += _parse_industries(wb, errors)
         entries += _parse_prompts(wb, errors)
@@ -217,6 +252,49 @@ def parse_workbook(raw: bytes) -> tuple[list[dict], list[dict]]:
     finally:
         wb.close()
     return entries, errors
+
+
+def parse_type_workbook(mtype_segment: str, raw: bytes) -> tuple[list[dict], list[dict]]:
+    """Parse a SINGLE master type's workbook (per-master upload). Same row shaping
+    as parse_workbook, restricted to the sheet(s) that make up this type."""
+    errors: list[dict] = []
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    except Exception:
+        return [], [{"sheet": "-", "row": 0, "message": "file is not a readable .xlsx workbook"}]
+    entries: list[dict] = []
+    try:
+        for parser in _TYPE_PARSERS[mtype_segment]:
+            entries += parser(wb, errors)
+    finally:
+        wb.close()
+    return entries, errors
+
+
+def _parse_codelists(wb, errors) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for rn, r in _sheet_rows(wb, "codelists", CODELIST_COLS, "list_key", errors):
+        if _skip_key(r.get("list_key")):
+            continue
+        code = _s(r.get("code"))
+        if not code:
+            errors.append({"sheet": "codelists", "row": rn, "message": "code is required"})
+            continue
+        try:
+            order = _num(r.get("order"), "int")
+        except ValueError as exc:
+            errors.append({"sheet": "codelists", "row": rn, "message": str(exc)})
+            continue
+        lk = _s(r.get("list_key"))
+        g = grouped.setdefault(lk, {"description": "", "entries": []})
+        if not g["description"]:
+            g["description"] = _s(r.get("description")) or _s(r.get("list_name"))
+        g["entries"].append({"code": code, "label": _s(r.get("label")) or code,
+                             "active": _bool(r.get("active"), True),
+                             "order": order if order is not None else 0})
+    return [{"mtype": "codelist", "key": lk,
+             "payload": {"name": lk, "description": g["description"], "entries": g["entries"]}}
+            for lk, g in grouped.items()]
 
 
 def _parse_doctypes(wb, errors) -> list[dict]:
@@ -353,3 +431,12 @@ def _parse_templates(wb, errors) -> list[dict]:
                        "message": f"template_key '{orphan}' has section rows but no matching "
                                   "row in the templates sheet"})
     return out
+
+
+# per-master-type parsers (used by parse_type_workbook). 'templates' spans the
+# templates + template_sections sheets, both handled by _parse_templates.
+_TYPE_PARSERS = {
+    "codelists": [_parse_codelists], "doctypes": [_parse_doctypes],
+    "industries": [_parse_industries], "prompts": [_parse_prompts],
+    "kpi-sets": [_parse_kpi_sets], "templates": [_parse_templates],
+}

@@ -48,7 +48,7 @@ export const DEFAULT_PREFERENCES: PreferenceProfileInput = {
 
 // ---- Masters ---------------------------------------------------------------
 
-export type MasterType = 'prompts' | 'templates' | 'doctypes' | 'industries' | 'kpi-sets';
+export type MasterType = 'prompts' | 'templates' | 'doctypes' | 'industries' | 'kpi-sets' | 'codelists';
 
 export type VersionStatus = 'draft' | 'in_review' | 'published' | 'retired' | 'rejected';
 
@@ -112,8 +112,9 @@ export interface TemplateSectionRow {
 
 export interface TemplatePayload {
   name: string;
-  segment: 'corporate' | 'fi' | 'project_finance';
-  relationship: 'etb' | 'ntb';
+  // codes from the 'segment' / 'relationship' code-list masters (dropdown-driven)
+  segment: string;
+  relationship: string;
   template_instructions: string;
   sections: TemplateSectionRow[];
   required_doc_types: string[];
@@ -158,12 +159,49 @@ export interface KpiSetPayload {
   kpis: KpiRow[];
 }
 
+export interface CodeListEntryRow {
+  code: string;
+  label: string;
+  active: boolean;
+  order: number;
+}
+
+export interface CodeListPayload {
+  name: string; // the list key, e.g. "segment" or "relationship"
+  description: string;
+  entries: CodeListEntryRow[];
+}
+
 export type MasterPayload =
   | PromptPayload
   | TemplatePayload
   | DoctypePayload
   | IndustryPayload
-  | KpiSetPayload;
+  | KpiSetPayload
+  | CodeListPayload;
+
+// dropdown-source responses (published/…)
+export interface PublishedSection {
+  code: string;
+  name: string;
+}
+export interface CodeListOption {
+  code: string;
+  label: string;
+}
+export interface PublishedCodeList {
+  key: string;
+  entries: CodeListOption[];
+}
+
+// per-master Excel upload report (also the JSON bundle import report)
+export interface MastersTypeReport {
+  created: { entry: string; version_no: number }[];
+  updated: { entry: string; version_no: number }[];
+  unchanged: string[];
+  errors: { entry?: string; sheet?: string; row?: number; message: string }[];
+  note?: string;
+}
 
 // Effective LLM egress config (no secret value; the key is env/vault-only).
 export interface LlmInfo {

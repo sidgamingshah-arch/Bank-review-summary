@@ -54,11 +54,29 @@ class TemplateSection(BaseModel):
 
 class TemplatePayload(BaseModel):
     name: str = Field(min_length=3)
-    segment: Literal["corporate", "fi", "project_finance"]
-    relationship: Literal["etb", "ntb"]
+    # segment + relationship are codes from the 'segment' / 'relationship' code-list
+    # masters (validated referentially below); the front end renders them as
+    # dropdowns. Free strings here so the code lists own the allowed values.
+    segment: str = Field(min_length=1)
+    relationship: str = Field(min_length=1)
     template_instructions: str = ""
     sections: list[TemplateSection] = Field(min_length=1)
     required_doc_types: list[str] = []
+
+
+class CodeListEntry(BaseModel):
+    code: str
+    label: str = Field(min_length=1)
+    active: bool = True
+    order: int = 0
+
+
+class CodeListPayload(BaseModel):
+    """A managed reference/code list (code + display label), e.g. 'segment' or
+    'relationship'. The front end reads active entries to populate dropdowns."""
+    name: str  # must equal the item key, e.g. "segment"
+    description: str = ""
+    entries: list[CodeListEntry] = Field(min_length=1)
 
 
 class FileConstraints(BaseModel):
@@ -106,11 +124,13 @@ PAYLOAD_MODELS = {
     "doctype": DocTypePayload,
     "industry": IndustryPayload,
     "kpi_set": KpiSetPayload,
+    "codelist": CodeListPayload,
 }
 
 # which payload field must equal the item key
 KEY_FIELD = {"prompt": "section_code", "doctype": "code",
-             "industry": "industry_code", "kpi_set": "industry_code"}
+             "industry": "industry_code", "kpi_set": "industry_code",
+             "codelist": "name"}
 
 GLOBAL_PROMPT_KEY = "global_standing_rules"
 
@@ -167,7 +187,9 @@ def _dependency_cycle_errors(sections, code_set: set[str]) -> list[str]:
 
 def validate_payload(mtype: str, key: str, payload: dict, *,
                      doctype_codes: set[str], prompt_keys: set[str],
-                     industry_codes: set[str]) -> tuple[dict, list[str]]:
+                     industry_codes: set[str],
+                     segment_codes: set[str] = frozenset(),
+                     relationship_codes: set[str] = frozenset()) -> tuple[dict, list[str]]:
     """Return (normalised_payload, errors)."""
     model = PAYLOAD_MODELS[mtype]
     try:
@@ -195,6 +217,12 @@ def validate_payload(mtype: str, key: str, payload: dict, *,
 
     elif mtype == "template":
         errors += validate_placeholders(parsed.template_instructions, doctype_codes)
+        # segment / relationship are code-list codes; enforced only once the list
+        # is populated, so existing data keeps working until a list is defined.
+        if segment_codes and parsed.segment not in segment_codes:
+            errors.append(f"segment: '{parsed.segment}' is not in the 'segment' code list")
+        if relationship_codes and parsed.relationship not in relationship_codes:
+            errors.append(f"relationship: '{parsed.relationship}' is not in the 'relationship' code list")
         orders = [s.order for s in parsed.sections]
         if len(set(orders)) != len(orders):
             errors.append("sections: order values must be unique")
@@ -223,5 +251,13 @@ def validate_payload(mtype: str, key: str, payload: dict, *,
         kpi_codes = [k.code for k in parsed.kpis]
         if len(set(kpi_codes)) != len(kpi_codes):
             errors.append("kpis: code values must be unique")
+
+    elif mtype == "codelist":
+        codes = [e.code for e in parsed.entries]
+        if len(set(codes)) != len(codes):
+            errors.append("entries: code values must be unique")
+        for e in parsed.entries:
+            if not SLUG_RE.match(e.code):
+                errors.append(f"entries: code '{e.code}' must be a lowercase slug (a-z, 0-9, '-', '_')")
 
     return parsed.model_dump(), errors

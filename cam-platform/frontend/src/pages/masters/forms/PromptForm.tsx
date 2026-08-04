@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { PromptPayload } from '../../../api/types';
 import { ChipsInput } from '../../../components/ChipsInput';
+import { InfoTip } from '../../../components/InfoTip';
 
 interface Props {
   value: PromptPayload;
@@ -26,7 +27,13 @@ export function PromptForm({ value, onChange, isNew }: Props) {
     <>
       <div className="form-grid-2">
         <div className="field">
-          <label>Section code {isNew ? <span className="hint-inline">(becomes the item key)</span> : null}</label>
+          <label>
+            Section code {isNew ? <span className="hint-inline">(becomes the item key)</span> : null}
+            <InfoTip
+              label="Section code"
+              text="Stable identifier for this section (a slug). Templates reference it, and it's what you pick in the template's section dropdown. Cannot be changed after creation."
+            />
+          </label>
           <input
             className="input mono"
             value={value.section_code}
@@ -40,7 +47,13 @@ export function PromptForm({ value, onChange, isNew }: Props) {
         </div>
       </div>
       <div className="field">
-        <label>Scope</label>
+        <label>
+          Scope
+          <InfoTip
+            label="Scope"
+            text="'section' = a normal memo section. 'global' = house-wide standing rules / agent rules (reserved keys), applied across all sections."
+          />
+        </label>
         <select className="select" value={value.scope} onChange={(e) => onChange({ ...value, scope: e.target.value as 'section' | 'global' })}>
           <option value="section">section</option>
           <option value="global">global</option>
@@ -58,7 +71,13 @@ export function PromptForm({ value, onChange, isNew }: Props) {
         </div>
       </div>
       <div className="field">
-        <label>Source doc types</label>
+        <label>
+          Source doc types
+          <InfoTip
+            label="Source doc types"
+            text="Only documents of these types are used as grounding for this section (facts are extracted from them). Leave empty to use all case documents."
+          />
+        </label>
         <ChipsInput
           values={value.source_doc_types}
           onChange={(v) => onChange({ ...value, source_doc_types: v })}
@@ -72,6 +91,10 @@ export function PromptForm({ value, onChange, isNew }: Props) {
           onChange={(e) => onChange({ ...value, uses_industry_kpis: e.target.checked })}
         />
         Uses industry KPIs
+        <InfoTip
+          label="Uses industry KPIs"
+          text="Injects the borrower industry's published KPI set into the prompt (via {{industry_kpis}}), so the section is written against those benchmarks."
+        />
       </label>
       <label className="check-pill standalone">
         <input
@@ -80,6 +103,10 @@ export function PromptForm({ value, onChange, isNew }: Props) {
           onChange={(e) => onChange({ ...value, uses_external_context: e.target.checked })}
         />
         Uses external context (news / web connectors, when enabled)
+        <InfoTip
+          label="Uses external context"
+          text="When a news/web connector is enabled in Settings, this section's grounding is enriched with that external intelligence (fetched once per run)."
+        />
       </label>
       <div className="field">
         <label>Rendering hints (optional)</label>

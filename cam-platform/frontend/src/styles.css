@@ -263,6 +263,65 @@ a:hover {
   letter-spacing: 0.04em;
 }
 
+/* inline info tooltip (ⓘ next to a field label) */
+.infotip {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.infotip-btn {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--muted);
+  font: italic 700 10px/1 Georgia, "Times New Roman", serif;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+}
+.infotip-btn:hover,
+.infotip-btn:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+  outline: none;
+}
+.infotip-bubble {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 260px;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-soft);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-pop);
+  font: 400 12px/1.45 var(--font);
+  text-align: left;
+  white-space: normal;
+  z-index: 120;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease, visibility 0.12s;
+}
+.infotip:hover .infotip-bubble,
+.infotip:focus-within .infotip-bubble {
+  opacity: 1;
+  visibility: visible;
+}
+@media (prefers-reduced-motion: reduce) {
+  .infotip-bubble {
+    transition: none;
+  }
+}
+
 /* ---------------- App shell ---------------- */
 
 .app-shell {
