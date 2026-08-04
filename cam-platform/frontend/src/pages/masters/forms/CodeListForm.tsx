@@ -1,4 +1,5 @@
 import type { CodeListEntryRow, CodeListPayload } from '../../../api/types';
+import { X } from 'lucide-react';
 import { InfoTip } from '../../../components/InfoTip';
 
 interface Props {
@@ -78,7 +79,7 @@ export function CodeListForm({ value, onChange, isNew }: Props) {
                 active
               </label>
               <button type="button" className="btn btn-sm btn-danger" onClick={() => remove(i)} aria-label="Remove entry">
-                ✕
+                <X size={12} strokeWidth={2.2} />
               </button>
             </div>
           ))}

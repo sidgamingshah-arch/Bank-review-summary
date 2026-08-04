@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { PromptPayload } from '../../../api/types';
 import { ChipsInput } from '../../../components/ChipsInput';
 import { InfoTip } from '../../../components/InfoTip';
@@ -117,7 +118,7 @@ export function PromptForm({ value, onChange, isNew }: Props) {
         />
       </div>
       <button type="button" className="collapsible-toggle" onClick={() => setOverridesOpen(!overridesOpen)}>
-        {overridesOpen ? '▾' : '▸'} Model overrides (optional)
+        {overridesOpen ? <ChevronDown size={13} strokeWidth={2.2} /> : <ChevronRight size={13} strokeWidth={2.2} />} Model overrides (optional)
       </button>
       {overridesOpen ? (
         <div className="collapsible-body form-grid-3">

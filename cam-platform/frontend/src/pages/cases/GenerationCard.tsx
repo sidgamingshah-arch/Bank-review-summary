@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { api, ApiError, errorMessage } from '../../api/client';
 import { DEFAULT_PREFERENCES } from '../../api/types';
@@ -182,7 +183,7 @@ export function GenerationCard({ caseId, onRunStarted }: Props) {
       ) : null}
 
       <button type="button" className="collapsible-toggle" onClick={openOverride}>
-        {overrideOpen ? '▾' : '▸'} Override output preferences for this run
+        {overrideOpen ? <ChevronDown size={13} strokeWidth={2.2} /> : <ChevronRight size={13} strokeWidth={2.2} />} Override output preferences for this run
       </button>
       {overrideOpen ? (
         <div className="collapsible-body">

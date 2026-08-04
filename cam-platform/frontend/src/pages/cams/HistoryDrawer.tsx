@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { X } from 'lucide-react';
 import { api, errorMessage } from '../../api/client';
 import type { CamSection, DiffResult, SectionVersion } from '../../api/types';
 import { DiffView } from '../../components/DiffView';
@@ -65,7 +66,7 @@ export function HistoryDrawer({ camId, section, onClose }: Props) {
         <div className="drawer-head">
           <h3>History — {section.name}</h3>
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClose} aria-label="Close">
-            ✕
+            <X size={16} strokeWidth={2} />
           </button>
         </div>
         <div className="drawer-body">

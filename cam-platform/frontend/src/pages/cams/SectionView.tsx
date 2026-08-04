@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Lock } from 'lucide-react';
 import { api, ApiError, errorMessage } from '../../api/client';
 import type { Cam, CamSection, Run, SectionVersion } from '../../api/types';
 import { Markdown } from '../../components/Markdown';
@@ -6,6 +7,7 @@ import { Modal } from '../../components/Modal';
 import { Spinner } from '../../components/Spinner';
 import { useToast } from '../../components/Toast';
 import { HistoryDrawer } from './HistoryDrawer';
+import { CHAPTER_ORDER, chapterKey } from './chapters';
 
 const AUTOSAVE_MS = 1200;
 const REGEN_POLL_MS = 1500;
@@ -14,12 +16,14 @@ const REGEN_MAX_POLLS = 80;
 interface Props {
   cam: Cam;
   section: CamSection;
+  sections: CamSection[];
   editable: boolean;
   onSaved: (sectionId: string, content: string, versionNo: number) => void;
   onReload: () => Promise<Cam | null>;
+  onSelectSection: (id: string) => void;
 }
 
-export function SectionView({ cam, section, editable, onSaved, onReload }: Props) {
+export function SectionView({ cam, section, sections, editable, onSaved, onReload, onSelectSection }: Props) {
   const toast = useToast();
   const isGapTrailer = section.section_code === '_gaps';
 
@@ -159,13 +163,34 @@ export function SectionView({ cam, section, editable, onSaved, onReload }: Props
           <span className="muted mono">{section.section_code}</span>
           {section.fixed_format ? (
             <span className="chip chip-gray" title="Fixed format — output preferences not applied">
-              🔒 fixed format
+              <Lock size={11} strokeWidth={2} /> fixed
             </span>
           ) : null}
-          <span className="muted">v{baseVersion}</span>
+          <span className="muted mono">v{baseVersion}</span>
           {saving ? <Spinner small label="Saving…" /> : dirty ? <span className="muted">unsaved…</span> : null}
         </div>
-        <div className="btn-row">
+        <div className="section-actions">
+          <select
+            className="select slim section-jump"
+            value={section.id}
+            onChange={(e) => onSelectSection(e.target.value)}
+            title="Jump to section"
+            aria-label="Jump to section"
+          >
+            {CHAPTER_ORDER.map((ch) => {
+              const items = sections.filter((s) => chapterKey(s) === ch.key);
+              if (items.length === 0) return null;
+              return (
+                <optgroup key={ch.key} label={ch.label}>
+                  {items.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.order}. {s.name}
+                    </option>
+                  ))}
+                </optgroup>
+              );
+            })}
+          </select>
           {editable && !isGapTrailer ? (
             editing ? (
               <>
@@ -218,7 +243,7 @@ export function SectionView({ cam, section, editable, onSaved, onReload }: Props
           spellCheck={false}
         />
       ) : (
-        <div className="section-content">
+        <div className="section-content doc-prose">
           <Markdown content={section.content} />
         </div>
       )}

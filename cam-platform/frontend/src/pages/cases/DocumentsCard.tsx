@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import type { DragEvent } from 'react';
+import { FileText, UploadCloud } from 'lucide-react';
 import { api, errorMessage } from '../../api/client';
 import { uploadCaseDocument } from '../../api/uploads';
 import type { CaseDocument, Tag } from '../../api/types';
@@ -202,7 +203,10 @@ export function DocumentsCard({ caseId, documents, doctypes, onReload }: Props) 
         tabIndex={0}
         onKeyDown={(e) => e.key === 'Enter' && fileInput.current?.click()}
       >
-        <strong>Drop files here</strong> or click to browse
+        <UploadCloud size={26} strokeWidth={1.6} className="dropzone-ico" />
+        <div>
+          <strong>Drop files here</strong> or click to browse
+        </div>
         <div className="hint">.pdf .docx .xlsx .csv .txt · max 25 MB · each file is uploaded as its own request</div>
         <input
           ref={fileInput}
@@ -241,6 +245,7 @@ export function DocumentsCard({ caseId, documents, doctypes, onReload }: Props) 
             <div key={doc.id} className={`doc-row${doc.status === 'quarantined' ? ' doc-quarantined' : ''}`}>
               <div className="doc-main">
                 <div className="doc-title">
+                  <FileText size={15} strokeWidth={1.7} className="doc-ico" />
                   <strong>{doc.filename}</strong>
                   <span className="muted">{formatBytes(doc.size_bytes)}</span>
                   <StatusChip status={doc.status} />
