@@ -9,6 +9,7 @@ import { Spinner } from '../../components/Spinner';
 import { StatusChip } from '../../components/StatusChip';
 import { useToast } from '../../components/Toast';
 import { MasterDetail } from './MasterDetail';
+import { PromptEditor } from './PromptEditor';
 import { VersionEditorModal } from './VersionEditorModal';
 import { SettingsTab } from './SettingsTab';
 import { BulkImportTab } from './BulkImportTab';
@@ -35,6 +36,7 @@ function MasterWorkbench({ mtype }: { mtype: MasterType }) {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [xlsxReport, setXlsxReport] = useState<MastersTypeReport | null>(null);
   const [xlsxBusy, setXlsxBusy] = useState(false);
+  const [promptView, setPromptView] = useState<'editor' | 'workspace'>('editor');
 
   const load = useCallback(async () => {
     try {
@@ -96,10 +98,49 @@ function MasterWorkbench({ mtype }: { mtype: MasterType }) {
     }
   };
 
+  const isPrompts = mtype === 'prompts';
+  const showEditor = isPrompts && promptView === 'editor';
+
   return (
-    <div className="masters-split">
-      <div className="masters-list card">
-        <div className="masters-list-head">
+    <>
+      {isPrompts ? (
+        <div className="pm-viewbar">
+          <span className="pm-viewbar-label">View</span>
+          <div className="scope-toggle">
+            <button
+              type="button"
+              className={`scope-btn${promptView === 'editor' ? ' active' : ''}`}
+              onClick={() => setPromptView('editor')}
+            >
+              Editor
+            </button>
+            <button
+              type="button"
+              className={`scope-btn${promptView === 'workspace' ? ' active' : ''}`}
+              onClick={() => setPromptView('workspace')}
+            >
+              Workspace
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {showEditor ? (
+        items === null ? (
+          <Spinner label="Loading…" />
+        ) : (
+          <PromptEditor
+            items={items}
+            selectedKey={selectedKey}
+            onSelectKey={setSelectedKey}
+            onChanged={load}
+            onNew={() => setCreating(true)}
+          />
+        )
+      ) : (
+        <div className="masters-split">
+          <div className="masters-list card">
+            <div className="masters-list-head">
           <h2>{TABS.find((t) => t.id === mtype)?.label}</h2>
           <div className="btn-row masters-list-actions">
             {mtype === 'kpi-sets' ? (
@@ -181,7 +222,9 @@ function MasterWorkbench({ mtype }: { mtype: MasterType }) {
         ) : (
           <EmptyState title="Select an entry" hint="Pick an item on the left to manage its versions, or create a new one." />
         )}
-      </div>
+          </div>
+        </div>
+      )}
 
       {creating ? (
         <VersionEditorModal
@@ -290,7 +333,7 @@ function MasterWorkbench({ mtype }: { mtype: MasterType }) {
           </div>
         </Modal>
       ) : null}
-    </div>
+    </>
   );
 }
 
