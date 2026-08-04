@@ -99,9 +99,9 @@ function MasterWorkbench({ mtype }: { mtype: MasterType }) {
   return (
     <div className="masters-split">
       <div className="masters-list card">
-        <div className="card-head">
+        <div className="masters-list-head">
           <h2>{TABS.find((t) => t.id === mtype)?.label}</h2>
-          <div className="btn-row">
+          <div className="btn-row masters-list-actions">
             {mtype === 'kpi-sets' ? (
               <>
                 <button type="button" className="btn btn-sm" disabled={bulkBusy} onClick={() => fileInput.current?.click()}>
