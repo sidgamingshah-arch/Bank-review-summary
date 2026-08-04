@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
+import { Check } from 'lucide-react';
 import { homeForRoles, useAuth } from '../auth/AuthContext';
 import { errorMessage } from '../api/client';
 
@@ -50,9 +51,18 @@ export function LoginPage() {
             summarisation and assurance agents, every figure traced to its source.
           </p>
           <div className="login-hero-points">
-            <div className="login-hero-point">✦ <span>Multi-agent generation with a no-fabrication trace check</span></div>
-            <div className="login-hero-point">✦ <span>Large-document retrieval across 300+ page filings</span></div>
-            <div className="login-hero-point">✦ <span>Maker-checker masters &amp; a tamper-evident audit trail</span></div>
+            <div className="login-hero-point">
+              <Check size={16} strokeWidth={2.4} className="login-hero-tick" />
+              <span>Multi-agent generation with a no-fabrication trace check</span>
+            </div>
+            <div className="login-hero-point">
+              <Check size={16} strokeWidth={2.4} className="login-hero-tick" />
+              <span>Large-document retrieval across 300+ page filings</span>
+            </div>
+            <div className="login-hero-point">
+              <Check size={16} strokeWidth={2.4} className="login-hero-tick" />
+              <span>Maker-checker masters &amp; a tamper-evident audit trail</span>
+            </div>
           </div>
         </div>
         <div className="login-hero-point muted" style={{ color: 'rgba(255,255,255,0.66)' }}>

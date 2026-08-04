@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { AlertTriangle, Bell, CheckCircle2, XCircle } from 'lucide-react';
 import { api } from '../api/client';
 import type { AppNotification, NotificationsResponse } from '../api/types';
 
 const POLL_MS = 30_000;
 
-function icon(kind: string): string {
-  if (kind === 'run_failed') return '⛔';
-  if (kind === 'run_partial') return '⚠️';
-  return '✅';
+function NotifIcon({ kind }: { kind: string }) {
+  if (kind === 'run_failed') return <XCircle size={17} strokeWidth={1.8} className="notif-ico-bad" />;
+  if (kind === 'run_partial') return <AlertTriangle size={17} strokeWidth={1.8} className="notif-ico-warn" />;
+  return <CheckCircle2 size={17} strokeWidth={1.8} className="notif-ico-ok" />;
 }
 
 /** Header bell: polls the caller's in-app notifications, shows an unread count,
@@ -73,12 +74,12 @@ export function NotificationBell() {
     <div className="notif" ref={ref}>
       <button
         type="button"
-        className="theme-toggle notif-bell"
+        className="icon-btn notif-bell"
         onClick={() => setOpen((o) => !o)}
         title="Notifications"
         aria-label={unread ? `Notifications, ${unread} unread` : 'Notifications'}
       >
-        🔔
+        <Bell size={18} strokeWidth={1.7} />
         {unread > 0 ? <span className="notif-badge">{unread > 9 ? '9+' : unread}</span> : null}
       </button>
       {open ? (
@@ -103,7 +104,7 @@ export function NotificationBell() {
                     onClick={() => openNotification(n)}
                   >
                     <span className="notif-ico" aria-hidden="true">
-                      {icon(n.kind)}
+                      <NotifIcon kind={n.kind} />
                     </span>
                     <span className="notif-text">
                       <span className="notif-title">{n.title}</span>
