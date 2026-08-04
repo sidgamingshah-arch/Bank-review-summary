@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ArrowUp, ArrowDown, X } from 'lucide-react';
 import { api } from '../../../api/client';
 import type {
   CodeListOption,
@@ -171,7 +172,7 @@ export function TemplateForm({ value, onChange }: Props) {
                 </label>
                 <span className="btn-row">
                   <button type="button" className="btn btn-sm" onClick={() => move(idx, -1)} disabled={idx === 0} aria-label="Move up">
-                    ↑
+                    <ArrowUp size={13} strokeWidth={2.2} />
                   </button>
                   <button
                     type="button"
@@ -180,10 +181,10 @@ export function TemplateForm({ value, onChange }: Props) {
                     disabled={idx === value.sections.length - 1}
                     aria-label="Move down"
                   >
-                    ↓
+                    <ArrowDown size={13} strokeWidth={2.2} />
                   </button>
                   <button type="button" className="btn btn-sm btn-danger" onClick={() => removeRow(idx)} aria-label="Remove row">
-                    ✕
+                    <X size={12} strokeWidth={2.2} />
                   </button>
                 </span>
               </div>

@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { api, errorMessage } from '../../api/client';
 import { AUDIT_ACTIONS } from '../../api/types';
 import type { AuditEvent, AuditEventsPage, ChainVerification } from '../../api/types';
@@ -245,7 +246,7 @@ export function AuditPage() {
                 {pageStart}–{pageEnd} of {total}
               </span>
               <button type="button" className="btn btn-sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>
-                ← Previous
+                <ChevronLeft size={14} strokeWidth={2} /> Previous
               </button>
               <button
                 type="button"
@@ -253,7 +254,7 @@ export function AuditPage() {
                 disabled={offset + PAGE_SIZE >= total}
                 onClick={() => setOffset(offset + PAGE_SIZE)}
               >
-                Next →
+                Next <ChevronRight size={14} strokeWidth={2} />
               </button>
             </div>
           </>

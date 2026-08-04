@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
+import { ChevronDown, ChevronRight, AlertTriangle, Check, X, ArrowRight } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, errorMessage } from '../../api/client';
 import type { Run } from '../../api/types';
@@ -99,7 +100,7 @@ export function RunPage() {
         </div>
         {run.cam_id ? (
           <button type="button" className="btn btn-primary btn-lg" onClick={() => navigate(`/cams/${run.cam_id}`)}>
-            Open CAM workspace →
+            Open CAM workspace <ArrowRight size={15} strokeWidth={1.9} />
           </button>
         ) : null}
       </div>
@@ -151,7 +152,7 @@ export function RunPage() {
                         onClick={() => toggleExpanded(s.section_code)}
                         title="per-agent token usage"
                       >
-                        {isOpen ? '▾' : '▸'} {trace.length} agents
+                        {isOpen ? <ChevronDown size={13} strokeWidth={2.2} /> : <ChevronRight size={13} strokeWidth={2.2} />} {trace.length} agents
                       </button>
                     ) : null}
                   </td>
@@ -162,7 +163,7 @@ export function RunPage() {
                         className="chip chip-amber"
                         title={`Untraceable numbers (not found in source documents):\n${s.untraceable.join(', ')}`}
                       >
-                        ⚠ {s.untraceable.length} untraceable
+                        <AlertTriangle size={12} strokeWidth={2} /> {s.untraceable.length} untraceable
                       </span>
                     ) : null}
                     {Object.entries(s.checks ?? {}).map(([agent, check]) => (
@@ -179,7 +180,7 @@ export function RunPage() {
                           ...(check.inconsistencies ?? []),
                         ].join('\n')}
                       >
-                        {check.passed === true ? '✓' : check.passed === false ? '✗' : '·'} {agent}
+                        {check.passed === true ? <Check size={13} strokeWidth={2.6} /> : check.passed === false ? <X size={13} strokeWidth={2.6} /> : '·'} {agent}
                       </span>
                     ))}
                   </td>
@@ -274,7 +275,7 @@ export function RunPage() {
 
       <div className="card">
         <button type="button" className="collapsible-toggle" onClick={() => setRecordOpen(!recordOpen)}>
-          {recordOpen ? '▾' : '▸'} Run record (audit)
+          {recordOpen ? <ChevronDown size={13} strokeWidth={2.2} /> : <ChevronRight size={13} strokeWidth={2.2} />} Run record (audit)
         </button>
         {recordOpen ? (
           <div className="collapsible-body">

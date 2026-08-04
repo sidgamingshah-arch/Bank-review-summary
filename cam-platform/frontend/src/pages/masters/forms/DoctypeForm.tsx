@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { DoctypePayload } from '../../../api/types';
 import { ChipsInput } from '../../../components/ChipsInput';
 import { InfoTip } from '../../../components/InfoTip';
@@ -58,7 +59,7 @@ export function DoctypeForm({ value, onChange, isNew }: Props) {
         Active
       </label>
       <button type="button" className="collapsible-toggle" onClick={() => setConstraintsOpen(!constraintsOpen)}>
-        {constraintsOpen ? '▾' : '▸'} File constraints (optional)
+        {constraintsOpen ? <ChevronDown size={13} strokeWidth={2.2} /> : <ChevronRight size={13} strokeWidth={2.2} />} File constraints (optional)
       </button>
       {constraintsOpen ? (
         <div className="collapsible-body">

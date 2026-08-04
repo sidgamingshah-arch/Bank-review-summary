@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 interface Props {
@@ -24,7 +25,7 @@ export function Modal({ title, onClose, children, footer, wide }: Props) {
         <div className="modal-head">
           <h3>{title}</h3>
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClose} aria-label="Close">
-            ✕
+            <X size={16} strokeWidth={2} />
           </button>
         </div>
         <div className="modal-body">{children}</div>

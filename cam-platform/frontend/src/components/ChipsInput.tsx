@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { X } from 'lucide-react';
 
 interface Props {
   values: string[];
@@ -26,7 +27,7 @@ export function ChipsInput({ values, onChange, placeholder, disabled }: Props) {
           {v}
           {!disabled && (
             <button type="button" aria-label={`Remove ${v}`} onClick={() => onChange(values.filter((x) => x !== v))}>
-              ✕
+              <X size={11} strokeWidth={2.4} />
             </button>
           )}
         </span>
