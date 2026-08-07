@@ -103,6 +103,7 @@ services:
       CAM_ROUTE_GENAI: http://genai:8000
       CAM_ROUTE_OUTPUT: http://output:8000
       CAM_ROUTE_AUDIT: http://audit:8000
+      CAM_ROUTE_RULES: http://rules:8000
 
   auth:
     <<: *service
@@ -121,6 +122,16 @@ services:
     environment:
       <<: *service-env
       SERVICE_MODULE: cam.services.document.main:app
+      # OCR for scanned / image-only PDFs — off unless configured. The Azure
+      # Document Intelligence key is read from the env var NAMED by
+      # CAM_OCR_API_KEY_ENV; its value is never stored on Settings/logged (NFR-06).
+      CAM_OCR_ENABLED: ${CAM_OCR_ENABLED:-false}
+      CAM_OCR_PROVIDER: ${CAM_OCR_PROVIDER:-azure_document_intelligence}
+      CAM_OCR_ENDPOINT: ${CAM_OCR_ENDPOINT:-}
+      CAM_OCR_API_VERSION: ${CAM_OCR_API_VERSION:-2024-11-30}
+      CAM_OCR_API_KEY_ENV: ${CAM_OCR_API_KEY_ENV:-AZURE_DOCUMENT_INTELLIGENCE_KEY}
+      CAM_OCR_MODEL: ${CAM_OCR_MODEL:-prebuilt-read}
+      AZURE_DOCUMENT_INTELLIGENCE_KEY: ${AZURE_DOCUMENT_INTELLIGENCE_KEY:-}
 
   tagging:
     <<: *service
@@ -158,6 +169,9 @@ services:
     environment:
       <<: *service-env
       SERVICE_MODULE: cam.services.genai.main:app
+      # compose the rule stack via the standalone rules service (fail-open to
+      # in-process composition if it is disabled or unreachable).
+      CAM_RULES_SERVICE_ENABLED: ${CAM_RULES_SERVICE_ENABLED:-true}
 
   output:
     <<: *service
@@ -170,6 +184,12 @@ services:
     environment:
       <<: *service-env
       SERVICE_MODULE: cam.services.audit.main:app
+
+  rules:
+    <<: *service
+    environment:
+      <<: *service-env
+      SERVICE_MODULE: cam.services.rules.main:app
 
 volumes:
   pg-data:

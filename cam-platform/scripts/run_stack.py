@@ -40,6 +40,7 @@ SERVICES = [
     ("genai", "cam.services.genai.main:app", 8106),
     ("output", "cam.services.output.main:app", 8107),
     ("audit", "cam.services.audit.main:app", 8108),
+    ("rules", "cam.services.rules.main:app", 8109),
 ]
 
 

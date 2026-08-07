@@ -1,7 +1,7 @@
 # Deployment guide (Linux & Windows)
 
 One codebase, several targets. Pick the row that matches your host; every option
-runs the same nine services behind the gateway on **:8080** (which also serves the
+runs the same ten services (gateway + 9) on **:8080** (which also serves the
 built web UI, so the whole app is one origin).
 
 | Target | OS | Best for | Section |
@@ -38,7 +38,7 @@ Press Ctrl-C (or close the window) to stop.
 
 ## 2. Linux production (systemd)
 
-A single always-on host, one supervisor process managing the nine services, with
+A single always-on host, one supervisor process managing the ten services, with
 restart-on-failure. (For more than one host, use [containers](#4-containers-docker--postgresql).)
 
 ```bash

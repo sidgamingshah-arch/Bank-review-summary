@@ -14,6 +14,9 @@ os.environ["CAM_DATA_DIR"] = _TMP
 os.environ.setdefault("CAM_JWT_SECRET", "test-secret")
 # unit tests drive the orchestration worker synchronously (worker.drain())
 os.environ.setdefault("CAM_WORKER_ENABLED", "false")
+# unit tests compose the rule stack in-process (no gateway hop); the standalone
+# rules service is covered by test_rules_service.py and the mock-stack e2e.
+os.environ.setdefault("CAM_RULES_SERVICE_ENABLED", "false")
 
 import pytest  # noqa: E402
 

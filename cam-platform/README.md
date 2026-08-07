@@ -32,7 +32,7 @@ Production installs (systemd, Windows service, containers) are in
 ```bash
 make install     # venv + backend deps
 make test        # 64 unit/service tests
-make e2e         # full BRD §9 acceptance walkthrough: starts all 9 services,
+make e2e         # full BRD §9 acceptance walkthrough: starts all 10 services,
                  # seeds masters via maker-checker, uploads/tags docs (incl. a
                  # quarantined EICAR file), generates a CAM, edits + chats with
                  # in-chat upload, finalises, exports DOCX/PDF, verifies lineage
@@ -41,7 +41,7 @@ make e2e         # full BRD §9 acceptance walkthrough: starts all 9 services,
 Interactive demo:
 
 ```bash
-make stack       # gateway :8080 + 8 services (SQLite, mock LLM, worker on)
+make stack       # gateway :8080 + 9 services (SQLite, mock LLM, worker on)
 make seed        # publish the demo master configuration (admin1 + admin2)
 make frontend    # or `make frontend-dev` for the SPA on :5173
 ```

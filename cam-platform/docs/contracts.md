@@ -20,12 +20,15 @@ with prefix `/api`. Services never call each other point-to-point; they call the
 | genai-gateway | 8106 | `cam.services.genai.main:app` |
 | output | 8107 | `cam.services.output.main:app` |
 | audit | 8108 | `cam.services.audit.main:app` |
+| rules | 8109 | `cam.services.rules.main:app` |
 | frontend (Vite dev) | 5173 | proxies `/api` → 8080 |
 
 Gateway routing table (path prefix → service):
 `/api/auth` → auth · `/api/masters` → master-config · `/api/cases`, `/api/documents` → document ·
 `/api/tagging` → tagging · `/api/runs` → orchestration · `/api/genai` → genai ·
-`/api/cams` → output · `/api/audit` → audit.
+`/api/cams` → output · `/api/audit` → audit · `/api/rules` → rules.
+Both `/api/genai` and `/api/rules` are the internal model/rule plane — reachable
+by service identities only (NFR-10); the gateway blocks end-user tokens there.
 
 ## Conventions
 
@@ -451,6 +454,25 @@ with the governed prompt-master entry for that role when published (reserved glo
   Provider/model identity is returned on every call. The provider is rebuilt when the admin
   saves new config (via `POST /api/genai/reload`) or lazily on first use after a restart. The
   API key is always read from the environment/vault (never the DB or the UI). See `docs/LIVE_RUN.md`.
+
+---
+
+## 6b. rules (`/api/rules`) — service tokens ONLY (NFR-10)
+
+The standalone rule-composition engine. Pure and stateless — it composes the
+layered system-prompt rule stack (house standing rules ⊕ global standing rules
+⊕ agent-role rules ⊕ template instructions ⊕ preference-derived style
+directives) over `cam.common.rules_engine`, the same library genai runs
+in-process. genai calls this service when `CAM_RULES_SERVICE_ENABLED` (default
+on) and falls back to local composition (byte-identical) if it is off or
+unreachable — so a rules-service outage never fails a run.
+
+- `POST /api/rules/assemble` `{layers: {global_rules?, template_instructions?},
+  preferences?, fixed_format, length_guidance?, agent_rules?}` → `{system}` — the
+  composed system prompt.
+- `GET /api/rules/house` → `{house_rules, style_guardrail, vocabulary:
+  {tonality, structure_bias, table_usage, length}}` — the immutable house rule
+  surface every generation is bound by (FR-D04, NFR-09).
 
 ---
 
