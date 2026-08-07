@@ -68,7 +68,7 @@ narrowing) · **▷ Deferred** (v1 scope decision, integration point in place).
 | FR-C05 | M | ✔ | many docs per type with period labels + ordering, used in grounding labels | e2e |
 | FR-C06 | M | ✔ | tag view/add/change/confirm/remove, all audited (`tag.*`) | tests, e2e |
 | FR-C07 | S | ✔ | sha256 duplicate detection — warn and proceed (`duplicate_of`) | tests/test_document_service.py |
-| FR-C08 | S | ◐ | text extraction (pdf/docx/xlsx/csv/txt) with per-file status; scanned PDFs surface as `no_text` — OCR engine is a documented integration point | tests |
+| FR-C08 | S | ✔ | text extraction (pdf/docx/xlsx/csv/txt) with per-file status; scanned/image-only PDFs (no text layer) are recovered via OCR (Azure Document Intelligence) when `CAM_OCR_ENABLED`, else surface as `no_text` | tests (`test_ocr.py`) |
 | FR-C09 | M | ✔ | completeness vs template; run refuses unless `proceed_with_gaps`; gaps disclosed in trailer | tests/test_orchestration.py, e2e |
 | FR-C10 | C | ◐ | multiple tags per document incl. `page_range` field (split-tagging data model + API); simple UI | tests |
 
@@ -115,7 +115,7 @@ narrowing) · **▷ Deferred** (v1 scope decision, integration point in place).
 | ID | Pri | Status | Implementation / notes | Verified |
 |---|---|---|---|---|
 | NFR-01 | M | ✔ | React SPA (Vite+TS), desktop-first, zero-error build | FE build (CI) |
-| NFR-02 | M | ✔ | 8 services + gateway, async DB-backed generation queue with worker lease + reaper recovery and attempt caps (ADR-0001/0004) | e2e, tests/test_product_hardening.py |
+| NFR-02 | M | ✔ | 9 services + gateway, async DB-backed generation queue with worker lease + reaper recovery and attempt caps (ADR-0001/0004) | e2e, tests/test_product_hardening.py |
 | NFR-03 | M | ✔ | PostgreSQL in compose (SQLite dev); binaries/extracts in blob storage, never DB | ADR-0004 |
 | NFR-04 | M | ✔ | all calls (FE→BE and service→service) traverse the gateway/APIM stand-in with authN, throttling, logging (ADR-0002) | e2e |
 | NFR-05 | M | ✔ | BRD §4 matrix as data, enforced everywhere; SSO adapter swappable | tests (denials), e2e |

@@ -38,6 +38,8 @@ const TONE_BY_STATUS: Record<string, ChipTone> = {
   generated: 'blue',
   chat_suggestion: 'purple',
   regeneration: 'blue',
+  // document extraction method
+  ocr: 'blue',
   // preference scopes / misc
   org_default: 'gray',
   active: 'green',

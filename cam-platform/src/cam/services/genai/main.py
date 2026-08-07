@@ -19,7 +19,8 @@ from cam.common.security import Principal, make_auth_dependencies
 
 from . import agents
 from .assembly import (CLASSIFY_SYSTEM, build_classify_user, build_edit_user,
-                       build_generate_user, build_system)
+                       build_generate_user)
+from .rules_client import compose_system
 from .providers import make_embedder, make_provider
 from .trace import untraceable_numbers
 
@@ -173,9 +174,9 @@ class EditRequest(BaseModel):
 @app.post("/api/genai/generate")
 def generate(body: GenerateRequest, principal: Principal = Depends(require_service)):
     request = body.model_dump()
-    system = build_system(request["layers"], request["preferences"],
-                          request["fixed_format"], request["length_guidance"],
-                          agent_rules=request.get("agent_rules"))
+    system = compose_system(request["layers"], request["preferences"],
+                            request["fixed_format"], request["length_guidance"],
+                            agent_rules=request.get("agent_rules"))
     user = build_generate_user(request["layers"]["section_prompt"], request["grounding_docs"],
                                request.get("extracted_facts"), request.get("feedback"))
     result = get_provider().generate(request, system, user)
@@ -367,8 +368,8 @@ def embed(body: EmbedRequest, principal: Principal = Depends(require_service)):
 @app.post("/api/genai/edit")
 def edit(body: EditRequest, principal: Principal = Depends(require_service)):
     request = body.model_dump()
-    system = build_system({"global_rules": None, "template_instructions": None},
-                          request["preferences"], False, None)
+    system = compose_system({"global_rules": None, "template_instructions": None},
+                            request["preferences"], False, None)
     user = build_edit_user(request["current_content"], request["instruction"],
                            request["scope"], request["grounding_docs"])
     result = get_provider().edit(request, system, user)

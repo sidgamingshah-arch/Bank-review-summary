@@ -43,6 +43,7 @@ DEFAULT_ROUTES: dict[str, str] = {
     "/api/genai": "http://localhost:8106",
     "/api/cams": "http://localhost:8107",
     "/api/audit": "http://localhost:8108",
+    "/api/rules": "http://localhost:8109",
 }
 
 
@@ -56,7 +57,7 @@ def routes() -> dict[str, str]:
         "/api/tagging": "CAM_ROUTE_TAGGING", "/api/runs": "CAM_ROUTE_ORCHESTRATION",
         "/api/notifications": "CAM_ROUTE_ORCHESTRATION",
         "/api/genai": "CAM_ROUTE_GENAI", "/api/cams": "CAM_ROUTE_OUTPUT",
-        "/api/audit": "CAM_ROUTE_AUDIT",
+        "/api/audit": "CAM_ROUTE_AUDIT", "/api/rules": "CAM_ROUTE_RULES",
     }
     for prefix, env in env_keys.items():
         if os.environ.get(env):
@@ -113,9 +114,9 @@ async def proxy(request: Request, rest: str) -> Response:
             raise ApiError.unauthorized()
         principal = decode_token(settings, auth[len("Bearer "):])  # raises 401 on bad/expired
         principal_key = principal.sub
-        # APIM policy: model plane is service-to-service only (NFR-10)
-        if path.startswith("/api/genai") and not principal.is_service:
-            raise ApiError.forbidden("GenAI gateway is not exposed to end users")
+        # APIM policy: model + rule planes are service-to-service only (NFR-10)
+        if (path.startswith("/api/genai") or path.startswith("/api/rules")) and not principal.is_service:
+            raise ApiError.forbidden("this internal service plane is not exposed to end users")
 
     _throttle(principal_key)
 

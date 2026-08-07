@@ -60,6 +60,7 @@ flowchart LR
         GENAI["genai :8106<br/>prompt assembly · providers · trace-check"]
         OUT["output :8107<br/>CAM editor · chat · exports"]
         AUD["audit :8108<br/>hash-chained trail"]
+        RUL["rules :8109<br/>rule-composition engine"]
     end
     LLM["Approved model endpoint<br/>Anthropic · OpenAI-compat · Azure OpenAI · mock"]
     EMB["Embedding endpoint<br/>(OpenAI-compat · Azure · local hash)"]
@@ -167,8 +168,10 @@ flowchart LR
   integration point (EICAR test string stubbed), and quarantine with a visible
   reason. Quarantined content is never stored or used as grounding.
 - **Extraction**: text extract stored in blob storage alongside the binary; the
-  DB holds only metadata, hashes and pointers (NFR-03). OCR is an integration
-  point (status surfaced).
+  DB holds only metadata, hashes and pointers (NFR-03). A scanned / image-only
+  PDF (no text layer) is recovered via **OCR** (Azure Document Intelligence
+  `prebuilt-read`) when `CAM_OCR_ENABLED` — fail-open, so an OCR outage simply
+  leaves the document `no_text` as before; otherwise it surfaces as `no_text`.
 - **Tagging** (`tagging` svc): AI-first classification via the GenAI gateway's
   `/classify`, with a deterministic keyword fallback and a confidence threshold;
   the tagging *method* (`llm` vs `keyword`) is audited (AC-4).
@@ -473,7 +476,7 @@ gating finalisation:
 - **Local (one click).** Windows: double-click `start-windows.bat`; Linux/macOS:
   `./start-linux.sh` → venv + UI build + seed + all services + browser at
   `http://localhost:8080` (the gateway serves the built SPA — single origin). Under
-  the hood: `scripts/launch.py` → `scripts/run_stack.py` (9 uvicorn processes,
+  the hood: `scripts/launch.py` → `scripts/run_stack.py` (10 uvicorn processes,
   SQLite, local blobs, mock LLM — zero external deps).
 - **Single-host service.** Linux: a `systemd` unit (`deploy/systemd/`); Windows: a
   boot Scheduled Task (`deploy/windows/`). Both supervise `run_stack.py`. See
@@ -491,9 +494,9 @@ gating finalisation:
 
 ## 15. What v1 defers
 
-Rich-text WYSIWYG (markdown editor shipped), OCR for scanned docs (integration
-point, status surfaced), one-pager export, a usage-dashboard UI (API exists), and
-a formal MRM workflow (sampling endpoint + versioned artifacts exist). Also noted
+Rich-text WYSIWYG (markdown editor shipped), one-pager export, a usage-dashboard
+UI (API exists), and a formal MRM workflow (sampling endpoint + versioned
+artifacts exist). (OCR for scanned PDFs is now shipped behind `CAM_OCR_ENABLED`.) Also noted
 for hardening: a cross-process finalize guard for the multi-process PostgreSQL
 mode (the default in-process deployment is already serialised). Full list with
 pointers in [traceability.md](traceability.md).

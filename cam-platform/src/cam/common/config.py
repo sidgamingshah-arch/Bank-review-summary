@@ -104,6 +104,29 @@ class Settings(BaseSettings):
     connector_timeout_seconds: float = 8.0
     connector_max_items: int = 5
 
+    # ---- OCR for scanned / image-only PDFs (closes the FR-C05 text-layer-only
+    # gap). Off by default: when enabled and a PDF yields no extractable text
+    # layer, intake falls back to OCR. Provider 'azure_document_intelligence'
+    # calls the Azure Document Intelligence prebuilt-read model over REST;
+    # 'mock' returns deterministic text for dev/tests. The key is read from the
+    # env var NAMED below and never stored on Settings/logged (NFR-06).
+    ocr_enabled: bool = False
+    ocr_provider: str = "azure_document_intelligence"  # azure_document_intelligence | mock
+    ocr_endpoint: str = ""  # e.g. https://my-di.cognitiveservices.azure.com
+    ocr_api_version: str = "2024-11-30"
+    ocr_api_key_env: str = "AZURE_DOCUMENT_INTELLIGENCE_KEY"  # env var NAME only (NFR-06)
+    ocr_model: str = "prebuilt-read"
+    ocr_timeout_seconds: float = 30.0
+    ocr_poll_max_seconds: float = 55.0  # bound on the async analyse polling loop
+
+    # ---- Standalone rule service (the rule-composition engine). When enabled,
+    # genai composes the layered system-prompt rule stack by calling the rules
+    # service; if it is disabled OR unreachable, genai falls back to the
+    # in-process rules engine (byte-identical output), so behaviour is unchanged
+    # either way. The service is part of the standard topology (run_stack /
+    # compose), hence default-on.
+    rules_service_enabled: bool = True
+
     # intake / generation guardrails
     max_upload_mb: int = 25
     # Extracted-text cap (on-disk). Large enough for a 300+ page annual report

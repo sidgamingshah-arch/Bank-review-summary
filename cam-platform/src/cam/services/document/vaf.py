@@ -22,7 +22,7 @@ from cam.common.db import new_id
 from cam.common.http import gateway_client, gateway_headers
 from cam.common.security import Principal
 
-from . import azure_search, chunking, embedding, storage
+from . import azure_search, chunking, embedding, ocr, storage
 from .extraction import extract_text
 from .models import Case, Document, DocumentChunk, DocumentTag
 
@@ -192,12 +192,22 @@ def process_file(db: Session, *, case: Case, filename: str, content: bytes,
     storage.write_blob(doc.id, ext, content)
 
     text = extract_text(content, ext, max_chars=settings.max_extract_chars)
+    # OCR fallback (opt-in): a scanned/image-only PDF has no text layer, so
+    # recover its content via OCR when enabled. Fail-open — on any error the
+    # document simply stays 'no_text' exactly as before.
+    ocr_used = False
+    if (text is None or not text.strip()) and ext == ".pdf" and ocr.enabled():
+        recovered = ocr.ocr_text(content, ctype)
+        if recovered and recovered.strip():
+            text = recovered[: settings.max_extract_chars]
+            ocr_used = True
+
     if text is None:
         doc.extraction, doc.status = "unsupported", "no_text"
     elif text.strip():
-        doc.extraction, doc.status = "ok", "ready"
+        doc.extraction, doc.status = ("ocr" if ocr_used else "ok"), "ready"
     else:
-        # e.g. scanned/image-only PDF: no text layer (OCR is a documented v1 gap).
+        # scanned/image-only PDF, no text layer and OCR off/unavailable
         doc.extraction, doc.status = "empty", "no_text"
     if text is not None:
         storage.write_extract(doc.id, text)
@@ -234,6 +244,7 @@ def process_file(db: Session, *, case: Case, filename: str, content: bytes,
                principal=principal, case_id=case.id,
                detail={"filename": filename, "sha256": sha256, "size_bytes": len(content),
                        "doctype": best.get("doctype_code") if best else None,
+                       "extraction": doc.extraction,
                        **(extra_detail or {})})
     if tag is not None:
         audit.emit(settings, action="tag.auto_applied", entity_type="tag",
